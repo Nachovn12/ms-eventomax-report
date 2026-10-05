@@ -1,0 +1,18 @@
+services:
+  report:
+    build:
+      context: .
+    container_name: eventomax-report-prod
+    restart: always
+    environment:
+      DB_URL: ${DB_URL}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+    networks:
+      - eventomax-net
+
+networks:
+  eventomax-net:
+    external: true
+

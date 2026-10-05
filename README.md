@@ -1,16 +1,21 @@
 # EventoMax Report Microservice
 
 ## Propósito
-Microservicio encargado de generar y proveer acceso al modelo de lectura (read model) de reportes y auditoría del ecosistema EventoMax.
-Recibe eventos de otros microservicios mediante Kafka y actualiza su base de datos para consultas optimizadas.
+Microservicio encargado de generar y proveer acceso al modelo de lectura (read model) de reportería, KPIs y analítica del ecosistema EventoMax.
+Posteriormente consumirá eventos de otros microservicios mediante Kafka para construir su read model de reportería para consultas optimizadas (actualmente no implementado).
 
 ## Estado
 **Baseline EMX-70**
-> **Nota:** La lógica funcional de negocio, endpoints `/api/report/*`, migraciones Flyway funcionales y consumers Kafka **NO** están implementados en este baseline. Serán desarrollados posteriormente en la tarea **EMX-68**.
+> **Nota:** Este es únicamente el baseline técnico inicial (EMX-70). Pertenecen a la tarea funcional **EMX-68**:
+> - endpoints `/api/report/*`
+> - read model funcional
+> - migraciones Flyway funcionales
+> - Kafka consumers/listeners
+> - lógica de KPIs y top-services
 
 ## Stack Tecnológico
 - Java 25
-- Spring Boot 3.4.x / 4.1.1
+- Spring Boot 4.1.1
 - PostgreSQL (Base de datos relacional)
 - Flyway (Migraciones de base de datos)
 - Spring Kafka (Mensajería)
@@ -19,7 +24,8 @@ Recibe eventos de otros microservicios mediante Kafka y actualiza su base de dat
 ## Variables de Entorno Requeridas
 Se requiere configurar las siguientes variables de entorno (ver `.env.example`):
 ```properties
-DB_URL=jdbc:postgresql://localhost:5434/report_db
+POSTGRES_DB=eventomax_report
+DB_URL=jdbc:postgresql://localhost:5434/eventomax_report
 DB_USER=your_db_user
 DB_PASSWORD=your_db_password
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092

@@ -1,5 +1,5 @@
 # Contrato REST y Rangos Temporales (EMX-80)
-**ESTADO: BORRADOR v0.1, pendiente de aprobación del equipo**
+**ESTADO: APROBADO CONDICIONADO por Ignacio para avanzar con EMX-81. Mapeo Kafka y DTOs definitivos NO congelados hasta aprobar el contrato mínimo de productions.events con Audit.**
 
 ## 1. Endpoints (solo lectura)
 - `GET /api/report/kpis?range=last24h`
@@ -34,20 +34,25 @@ Se propone utilizar el formato estándar ProblemDetail (RFC 9457) de Spring Boot
 
 ## 4. Estructura de Respuesta (DTOs)
 ### `/kpis`
-Se proponen 5 indicadores calculados sobre el evento `ProductionStatusChanged` filtrando por `occurredAt` dentro del rango:
+Se proponen 5 indicadores calculados sobre el evento `ProductionStatusChanged` filtrando por `occurredAt` dentro del rango (APROBADOS como base inicial):
 - Total de cambios de estado en el rango.
-- Conteo de producciones por estado actual (último `newStatus` por `productionId`). Limitación: el evento solo se emite al cambiar de estado, no al crear la producción; las producciones que siguen en SOLICITADO sin transiciones no aparecen. El estado actual se determina por mayor occurredAt, no por orden de llegada.
+- Conteo de producciones por estado actual: Último estado observado de las producciones que tienen transiciones registradas. No representa el total real de producciones.
 - Conteo de transiciones `previousStatus` -> `newStatus`.
 - Producciones canceladas en el rango (`newStatus` = CANCELADO).
 - Producciones cerradas en el rango (`newStatus` = CERRADO).
 
 Los nombres de campo del JSON de respuesta quedan como "PROPUESTA, a aprobar".
 
+**Notas:**
+- Cobertura parcial: mientras solo existan cambios de estado, la respuesta de `/kpis` debe informar esta cobertura parcial y no presentarse como inventario completo.
+- Los kpis usan `ProductionStatusChanged`, `eventId` para idempotencia y `occurredAt` para rangos.
+- Criterio técnico para el KPI 2: el último estado de cada productionId se determina por mayor occurredAt, no por orden de llegada del mensaje.
+
 ### `/top-services`
-BLOQUEADO. El evento v0.1 no incluye `serviceName` ni `serviceId`. Pendiente de definir qué es un servicio contratado.
+PENDIENTE hasta contar con `serviceId` y datos reales de contratación. No bloquea el read model.
 
 ### Tiempo de montaje
-PENDIENTE. Fórmula propuesta `occurredAt(EN_EJECUCION) - occurredAt(EN_MONTAJE)` sin aprobar. No se implementa.
+Propuesta EN_MONTAJE -> EN_EJECUCION, pendiente de confirmación funcional. No se implementa.
 
 ## 5. Matriz de Mapeo
 | Campo DTO de respuesta | Campo read model | Campo exacto en productions.events |
@@ -70,24 +75,43 @@ PENDIENTE. Fórmula propuesta `occurredAt(EN_EJECUCION) - occurredAt(EN_MONTAJE)
 | traceId | Solo para logs |
 | correlationId | Solo para logs |
 
+*Nota: EMX-81 puede usar solo las columnas de la matriz de la sección 5. No agregar campos hasta congelar el contrato.*
+
 ## 6. Contrato Kafka v0.1 (provisional)
 - **Topic:** `productions.events`
 - **Serialización:** JSON
 - **Consumer group propuesto:** `report-group`
 - **Particiones locales:** 3
-- **DLT de Report:** PENDIENTE de definir
+- **DLT de Report:** `productions.events.report.DLT` (PROPUESTA de Ignacio, con reintentos acotados y coordinación con infraestructura; se confirma en EMX-71)
 - **Envelope:** `type`, `eventId`, `timestamp`, `traceId`, `correlationId`, `payload`
 - **Estados válidos:** SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO
 
-## 7. Decisiones pendientes del equipo
-1) Aprobar los 5 KPIs propuestos.
-2) Qué representa un servicio contratado y cómo llega al evento (top-services).
-3) Aprobar o no la fórmula de tiempo de montaje.
-4) Nombre de la DLT de Report.
-5) JWT: Report valida con OAuth2 Resource Server (propuesta de Ignacio) o confía solo en el BFF.
-6) Si ProductionCreated entra en el alcance.
-7) Cómo contar producciones sin eventos de cambio de estado (requeriría ProductionCreated).
+## 7. Registro de decisiones
+
+### DECIDIDO
+*(Fecha: 2026-10-08 | Fuente: Ignacio Valeria, revisión commit 302b76d)*
+| Decisión | Detalle |
+| :--- | :--- |
+| KPIs aprobados | 5 KPIs propuestos aprobados como base inicial. |
+| Corrección KPI 2 | Último estado observado de producciones con transiciones; no es total real. |
+| Cobertura parcial | `/kpis` debe informar cobertura parcial si solo hay eventos de cambio de estado. |
+| Funcionalidades diferidas | `top-services` y tiempo de montaje quedan diferidos sin bloquear el read model. |
+| DLT propuesta | Nombre productions.events.report.DLT con reintentos acotados: PROPUESTA de Ignacio, se confirma en EMX-71. |
+| Preferencia JWT | Report validará JWT vía OAuth2 Resource Server si BFF propaga Bearer; auth Admin en BFF; no expuesto públicamente. |
+
+### PENDIENTE explícito
+| Elemento pendiente | Referencia / Tarea |
+| :--- | :--- |
+| Confirmar nombre DLT | EMX-71 |
+| Formalizar JWT | EMX-121 / EMX-72 |
+| Incluir ProductionCreated en el contrato | EMX-71 |
+| Aprobar y compartir contrato mínimo de productions.events con Audit | EMX-71 / Equipo |
+| Definir servicio contratado y serviceId | Pendiente |
+| Confirmación funcional del tiempo de montaje | Pendiente |
+| Decisión sobre rango last30d | Pendiente |
+| Congelar mapeo Kafka y DTOs definitivos (depende de aprobar el contrato mínimo con Audit) | EMX-71 / Equipo |
+| Aprobar nombres de campo del JSON de respuesta de /kpis | EMX-80 |
 
 ## 8. Seguridad
 - **Rol Funcional Requerido:** Admin.
-- **Trust Boundary:** Pendiente de definición en EMX-121 / EMX-72. El BFF ya reenvía `Authorization` a Productions y Catalog, y la propagación hacia Report está pendiente de aprobación en EMX-72/121.
+- **Trust Boundary:** Preferencia de Ignacio: Report valida JWT con OAuth2 Resource Server si el BFF propaga el Bearer; la autorización Admin se mantiene en el BFF; el microservicio no se expone públicamente. Se formaliza en EMX-121/EMX-72. El BFF ya reenvía `Authorization` a Productions y Catalog, y la propagación hacia Report está pendiente de aprobación.

@@ -15,11 +15,26 @@ spring:
 
   flyway:
     enabled: true
-    # Don't fail if there are no migrations yet, as they will be added in EMX-68
     locations: classpath:db/migration
 
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${KAFKA_CONSUMER_GROUP:report-group}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      auto-startup: ${KAFKA_LISTENER_AUTO_STARTUP:true}
+
+app:
+  kafka:
+    topic:
+      production-events: ${KAFKA_TOPIC_PRODUCTION_EVENTS:productions.events}
+      report-dlt: ${KAFKA_TOPIC_REPORT_DLT:productions.events.report.DLT}
+    retry:
+      max-attempts: ${KAFKA_RETRY_MAX_ATTEMPTS:3}
+      backoff-interval-ms: ${KAFKA_RETRY_BACKOFF_MS:1000}
 
 management:
   endpoints:
@@ -31,4 +46,3 @@ management:
   endpoint:
     health:
       show-details: never
-

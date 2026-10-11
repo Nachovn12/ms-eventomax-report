@@ -222,6 +222,8 @@ La suite cubre:
 ---
 
 ## 9. Despliegue con Docker y Docker Compose
+> **IMPORTANTE ANTES DE LEVANTAR CON DOCKER:** 
+> Debes copiar el archivo `.env.example` a `.env` (`Copy-Item .env.example .env` en PowerShell) y completar `DB_USER` y `DB_PASSWORD` con valores locales de prueba. Sin este archivo, PostgreSQL no iniciará. El archivo `.env` está en `.gitignore` y no se versiona por seguridad.
 
 ### 9.1. Puertos Asignados
 
@@ -279,3 +281,10 @@ Con la aplicación en ejecución:
 4. **Nombres de Campos DTO de `/kpis`:** Los nombres del JSON propuesto (`totalStatusChanges`, `currentStatusDistribution`, `transitions`, `cancelledCount`, `closedCount`, `partialCoverage`) están pendientes de aprobación formal por parte de Ignacio.
 5. **Reporte `top-services`:** Pendiente hasta contar con el identificador `serviceId` y el modelo de contratación de servicios en el dominio.
 6. **Tiempo de Montaje:** Propuesta de cálculo de duración `EN_MONTAJE` -> `EN_EJECUCION` pendiente de confirmación funcional.
+
+## 10. Seguridad y Trust Boundary (EMX-121)
+
+Actualmente, `ms-eventomax-report` opera bajo un modelo de **Trust Boundary** en red interna. 
+- El microservicio **no está expuesto públicamente**.
+- Se asume que la autenticación, validación del token JWT de Entra ID y autorización de roles (ej. rol `Admin`) son responsabilidad exclusiva del API Gateway y el BFF (`ms-eventomax-bff`).
+- Queda pendiente la implementación de OAuth2 Resource Server para validación de firma local (requiere definición de `issuer-uri` por parte de arquitectura).

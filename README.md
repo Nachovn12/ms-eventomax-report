@@ -133,29 +133,29 @@ Formato estándar ProblemDetail (RFC 9457):
 
 ## 5. Read Model y Persistencia
 
-El modelo de lectura está normalizado para optimizar agregaciones analíticas e implementado en PostgreSQL a través de migraciones Flyway (`src/main/resources/db/migration/V1__create_report_schema.sql`). La aplicación valida el esquema contra JPA al iniciar (`spring.jpa.hibernate.ddl-auto=validate`).
+El modelo de lectura está normalizado para optimizar agregaciones analíticas e implementado en PostgreSQL a través de migraciones Flyway (`src/main/resources/db/migration/V1__create_report_read_model.sql`). La aplicación valida el esquema contra JPA al iniciar (`spring.jpa.hibernate.ddl-auto=validate`).
 
-### 5.1. Tablas
+### 5.1. Tablas y Claves
 
 1. **`processed_event` (Control de Idempotencia):**
-   - `event_id UUID PRIMARY KEY`: Identificador único del evento recibido en el envelope.
-   - `processed_at TIMESTAMPTZ NOT NULL`: Fecha/hora de procesamiento del evento.
+   - `event_id UUID PRIMARY KEY`: Identificador único del evento recibido en la raíz del envelope.
+   - `processed_at TIMESTAMP WITH TIME ZONE NOT NULL`: Marca temporal UTC de inserción.
    - *Mecanismo atómico:* Inserción nativa `INSERT INTO processed_event (event_id, processed_at) VALUES (:eventId, :processedAt) ON CONFLICT DO NOTHING`. Si retorna `0`, el evento ya existía y es ignorado sin duplicar datos; si retorna `1`, se inserta el hecho en la misma transacción (`@Transactional`).
 
 2. **`report_production_fact` (Hechos de Transiciones):**
    Contiene **únicamente** las columnas aprobadas por el contrato del read model:
-   - `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`: Clave subrogada autoincremental.
+   - `id UUID PRIMARY KEY`: Clave primaria UUID (clave única asignada a cada hecho analítico, no BIGINT).
    - `event_id UUID NOT NULL UNIQUE REFERENCES processed_event(event_id)`: Clave foránea al evento procesado.
-   - `type VARCHAR(50) NOT NULL`: Tipo de evento (`CHECK (type = 'ProductionStatusChanged')`).
+   - `type VARCHAR(50) NOT NULL`: Tipo de evento (`ProductionStatusChanged`).
    - `production_id BIGINT NOT NULL`: Identificador numérico de la producción.
-   - `previous_status VARCHAR(20) NOT NULL`: Estado anterior (`CHECK` restringido a los 6 estados válidos).
-   - `new_status VARCHAR(20) NOT NULL`: Estado nuevo (`CHECK` restringido a los 6 estados válidos).
-   - `occurred_at TIMESTAMPTZ NOT NULL`: Marca temporal en que ocurrió el cambio (usada para filtros de rango temporal).
+   - `previous_status VARCHAR(50) NOT NULL`: Estado anterior (`chk_previous_status` restringido a los 6 estados del dominio).
+   - `new_status VARCHAR(50) NOT NULL`: Estado nuevo (`chk_new_status` restringido a los 6 estados del dominio).
+   - `occurred_at TIMESTAMP WITH TIME ZONE NOT NULL`: Marca temporal en que ocurrió el cambio (usada para filtros de rango temporal).
 
-3. **Índices de optimización:**
-   - `idx_report_fact_occurred_at` sobre `(occurred_at)`
-   - `idx_report_fact_prod_occurred` sobre `(production_id, occurred_at DESC)`
-   - `idx_report_fact_transitions` sobre `(previous_status, new_status, occurred_at)`
+3. **Índices de optimización reales:**
+   - `idx_fact_occurred_at` sobre `(occurred_at)`
+   - `idx_fact_prod_occurred` sobre `(production_id, occurred_at DESC)`
+   - `idx_fact_status_occurred` sobre `(new_status, occurred_at)`
 
 ---
 
@@ -163,15 +163,24 @@ El modelo de lectura está normalizado para optimizar agregaciones analíticas e
 
 - **Topic principal:** `productions.events` (configurable vía `KAFKA_TOPIC_PRODUCTION_EVENTS`).
 - **Consumer Group:** `report-group` (configurable vía `KAFKA_CONSUMER_GROUP`).
-- **Contrato Kafka (v0.1 provisional):** Envelope JSON con campos raíz `type`, `eventId`, `timestamp`, `traceId`, `correlationId` y objeto anidado `payload` (`productionId`, `previousStatus`, `newStatus`, `occurredAt`, etc.).
-- **Filtrado tolerante:**
-  - Deserialización tolerante con Jackson 3 (`FAIL_ON_UNKNOWN_PROPERTIES=false`), ignorando campos no requeridos por reportería (`organizerId`, `productionName`, `location`, `scheduledAt`).
-  - Eventos cuyo `type` sea distinto de `ProductionStatusChanged` (como un futuro `ProductionCreated`) son ignorados de forma segura con log a nivel `INFO`.
+- **Contrato Kafka (v1.0 oficial de Producciones):** Envelope JSON `KafkaEventEnvelope<T>` con campos raíz:
+  - `schemaVersion`: `"1.0"`
+  - `eventId`: UUID
+  - `type`: String (`ProductionCreated`, `ProductionStatusChanged`)
+  - `timestamp`: Instant
+  - `traceId`: String
+  - `correlationId`: String
+  - `actor`: String
+  - `payload`: Object
+- **Compatibilidad Contractual vs. Integración E2E:**
+  - *Compatibilidad Contractual (Validada):* El microservicio implementa deserialización tolerante mediante Jackson (`FAIL_ON_UNKNOWN_PROPERTIES=false`), extrayendo únicamente los campos necesarios y descartando atributos del payload no requeridos por reportería (`organizerId`, `productionName`, `location`, `scheduledAt`).
+  - *Integración E2E (Diferida):* La verificación del pipeline distribuido en vivo en clúster AWS corresponde al sprint de integración E2E (EMX-78).
+- **Tratamiento de `ProductionCreated`:** Eventos emitidos por Producciones cuyo `type` no corresponda a `ProductionStatusChanged` (como `ProductionCreated`) son ignorados de forma segura con log a nivel `INFO`, sin generar hechos ni desviar a DLT.
 - **Manejo de Errores y Dead Letter Topic (DLT):**
-  - **Topic DLT:** `productions.events.report.DLT` (*PROPUESTA* de Ignacio a confirmar en EMX-71, configurable vía `KAFKA_TOPIC_REPORT_DLT`).
-  - **Reintentos:** `DefaultErrorHandler` configurado con 3 intentos máximos y backoff fijo de 1000 ms.
+  - **Topic DLT:** `productions.events.report.DLT` (configurable vía `KAFKA_TOPIC_REPORT_DLT`).
+  - **Reintentos:** `DefaultErrorHandler` configurado con 3 intentos máximos y backoff de 1000 ms.
   - **Errores no reintentables:** `NonRetryableEventException` (validación de campos obligatorios, estado desconocido), `JacksonException` (JSON malformado) y `IllegalArgumentException` se desvían de inmediato a la DLT sin consumir reintentos.
-  - **Publicador DLT:** `DeadLetterPublishingRecoverer` respaldado por un bean dedicado `KafkaTemplate<String, String>` (`StringSerializer` en clave y valor) para garantizar que el mensaje original se preserve íntegro en la DLT.
+  - **Publicador DLT:** `DeadLetterPublishingRecoverer` respaldado por un bean dedicado `KafkaTemplate<String, String>` para preservar íntegro el mensaje original en la DLT.
 - **Trazabilidad:** Extracción de `traceId` y `correlationId` desde el envelope a MDC durante la invocación del listener, con limpieza garantizada en bloque `finally`.
 
 ---
@@ -186,9 +195,10 @@ Variables leídas desde `application.yml` y documentadas en `.env.example`:
 | `DB_URL` | URL JDBC de conexión a PostgreSQL | `jdbc:postgresql://localhost:5434/eventomax_report` | `application.yml`, `.env.example` |
 | `DB_USER` | Usuario de autenticación PostgreSQL | `your_db_user` | `application.yml`, `.env.example` |
 | `DB_PASSWORD` | Contraseña de autenticación PostgreSQL | `your_db_password` | `application.yml`, `.env.example` |
+| `REPORT_PORT` | Puerto host asignado a Report (evita colisión con Notify 8083) | `8085` | `docker-compose.yml`, `.env.example` |
 | `KAFKA_BOOTSTRAP_SERVERS` | Direcciones de los brokers de Apache Kafka | `localhost:9092` | `application.yml`, `.env.example` |
 | `KAFKA_CONSUMER_GROUP` | Grupo consumidor de Kafka para reportería | `report-group` | `application.yml`, `.env.example` |
-| `KAFKA_LISTENER_AUTO_STARTUP` | Auto-arranque del listener de Kafka (`false` en tests) | `true` | `application.yml`, `.env.example` |
+| `KAFKA_LISTENER_AUTO_STARTUP` | Auto-arranque del listener de Kafka (`false` en tests aislados) | `true` | `application.yml`, `.env.example` |
 | `KAFKA_TOPIC_PRODUCTION_EVENTS` | Topic de eventos entrantes de producciones | `productions.events` | `application.yml`, `.env.example` |
 | `KAFKA_TOPIC_REPORT_DLT` | Topic de Dead Letter Queue para eventos erróneos | `productions.events.report.DLT` | `application.yml`, `.env.example` |
 | `KAFKA_RETRY_MAX_ATTEMPTS` | Número máximo de intentos antes de enviar a DLT | `3` | `application.yml`, `.env.example` |
@@ -198,7 +208,16 @@ Variables leídas desde `application.yml` y documentadas en `.env.example`:
 
 ## 8. Pruebas Automatizadas
 
-La suite de pruebas automatizadas utiliza la base de datos en memoria H2 en modo compatibilidad PostgreSQL (`MODE=PostgreSQL;DB_CLOSE_DELAY=-1`), ejecutando las migraciones Flyway reales y con `spring.kafka.listener.auto-startup: false` para correr de manera aislada sin requerir brokers Kafka externos.
+La suite de pruebas automatizadas incluye 36 pruebas ejecutables mediante Maven Wrapper:
+
+- **Pruebas Unitarias y de Capa (H2):** 30 pruebas rápidas que validan controladores MockMvc, servicios con reloj fijo (`Clock.fixed`), mapeadores, repositorios y configuración de Kafka.
+- **Pruebas de Integración con Testcontainers (PostgreSQL 15 + Kafka 7.4):** 6 pruebas completas que verifican:
+  1. Aplicación real de la migración Flyway `V1__create_report_read_model.sql` y validación estricta con `ddl-auto=validate`.
+  2. Consumo del contrato real v1.0 `ProductionStatusChanged`, persistencia de hechos en PostgreSQL y consulta exitosa de `/api/report/kpis?range=last24h`.
+  3. Inserción idempotente atómica con `ON CONFLICT DO NOTHING` ante eventos duplicados (`eventId` repetido).
+  4. Resolución determinista del estado actual de producciones ante eventos desordenados (`occurredAt` cronológico).
+  5. Descarte controlado de eventos no suscritos (`ProductionCreated`) sin fallos ni desvío a DLT.
+  6. Enrutamiento directo a Dead Letter Topic (`productions.events.report.DLT`) ante eventos no recuperables.
 
 Para ejecutar los tests:
 
@@ -210,27 +229,18 @@ Para ejecutar los tests:
 ./mvnw clean test
 ```
 
-La suite cubre:
-- Validación de esquema Flyway y restricciones SQL (`CHECK`, `UNIQUE`, `NOT NULL`, FK).
-- Idempotencia transaccional y eventos fuera de orden en `ProcessedEventRepository` y `ProductionEventIngestionService`.
-- Lógica de cálculo de KPIs agregados con hora fija (`Clock.fixed`) y distribución completa de estados.
-- Deserialización tolerante con Jackson 3 y validación de tipos desconocidos en `ProductionEventMapper`.
-- Propagación y limpieza de MDC en `ProductionEventListener`.
-- Clasificación de excepciones reintentables y no reintentables en `KafkaConsumerConfigTest`.
-- Endpoints REST con MockMvc para códigos 200, 400 y 501.
-
 ---
 
 ## 9. Despliegue con Docker y Docker Compose
-> **IMPORTANTE ANTES DE LEVANTAR CON DOCKER:** 
+> **IMPORTANTE ANTES DE LEVANTAR CON DOCKER:**
 > Debes copiar el archivo `.env.example` a `.env` (`Copy-Item .env.example .env` en PowerShell) y completar `DB_USER` y `DB_PASSWORD` con valores locales de prueba. Sin este archivo, PostgreSQL no iniciará. El archivo `.env` está en `.gitignore` y no se versiona por seguridad.
 
-### 9.1. Puertos Asignados
+### 9.1. Puertos Asignados (Prevención de Colisiones)
 
-| Servicio | Contenedor | Puerto Host | Puerto Contenedor |
-| :--- | :--- | :--- | :--- |
-| `postgres` | `eventomax-report-db` | `5434` | `5432` |
-| `report` | `eventomax-report-app` | `8083` | `8080` |
+| Servicio | Contenedor | Puerto Host | Puerto Contenedor | Notas |
+| :--- | :--- | :--- | :--- | :--- |
+| `postgres` | `eventomax-report-db` | `5434` | `5432` | Aislado en puerto host 5434 |
+| `report` | `eventomax-report-app` | `${REPORT_PORT:-8085}` | `8080` | Configurable vía `REPORT_PORT` (evita colisión con `notify` en puerto 8083) |
 
 ### 9.2. Comandos de Gestión
 
@@ -245,7 +255,7 @@ docker compose up -d --build
 docker compose ps
 
 # 4. Comprobar salud del microservicio
-curl http://localhost:8083/actuator/health
+curl http://localhost:8085/actuator/health
 
 # 5. Detener los servicios
 docker compose down
@@ -257,34 +267,25 @@ docker compose down
 
 Con la aplicación en ejecución:
 
-- **Swagger UI:** `http://localhost:8083/swagger-ui/index.html` (o `http://localhost:8083/swagger-ui.html`)
-- **Especificación OpenAPI (JSON):** `http://localhost:8083/v3/api-docs`
-- **Health Check (Actuator):** `http://localhost:8083/actuator/health`
-- **Info (Actuator):** `http://localhost:8083/actuator/info`
+- **Swagger UI:** `http://localhost:8085/swagger-ui/index.html` (o `http://localhost:8085/swagger-ui.html`)
+- **Especificación OpenAPI (JSON):** `http://localhost:8085/v3/api-docs`
+- **Health Check (Actuator):** `http://localhost:8085/actuator/health`
+- **Info (Actuator):** `http://localhost:8085/actuator/info`
 
 ---
 
-## 11. Seguridad
+## 11. Seguridad y Trust Boundary (EMX-121)
 
-> **PENDIENTE de EMX-121 (trust boundary con BFF). Report no debe exponerse públicamente. Rol funcional: Admin.**
-
-- **Trust Boundary:** Siguiendo la definición arquitectónica aprobada por Ignacio Valeria, `ms-eventomax-report` funcionará como un OAuth2 Resource Server validando tokens JWT Bearer propagados exclusivamente por el BFF (Edge Service).
-- **Control de Acceso:** La autenticación y la validación del rol funcional **Admin** se resuelven en el BFF. El microservicio Report opera en red interna y no debe exponerse públicamente al tráfico de internet.
+Actualmente, `ms-eventomax-report` opera bajo un modelo de **Trust Boundary** en red interna:
+- El microservicio **no está expuesto públicamente**.
+- La autenticación mediante Microsoft Entra ID y la autorización de roles (rol requerido: `Admin` con scope `SCOPE_access_as_user`) son gestionadas en el API Gateway y el BFF (`ms-eventomax-bff`).
+- El BFF propaga el header `Authorization` (Bearer token) hacia `REPORT_BASE_URL`.
+- La adopción formal de OAuth2 Resource Server en Report queda presentada y evaluada para autorización de arquitectura.
 
 ---
 
 ## 12. Pendientes y Decisiones Abiertas del Contrato
 
-1. **Aprovisionamiento de Topics (EMX-71):** Creación formal de los topics `productions.events` y `productions.events.report.DLT` en el cluster Kafka junto con Ignacio.
-2. **Confirmación de Nombre DLT:** El nombre `productions.events.report.DLT` es una **PROPUESTA** de Ignacio a formalizar en EMX-71.
-3. **Congelamiento de Contrato Kafka v0.1:** El contrato de eventos se mantiene en versión preliminar v0.1 hasta que el equipo de Producciones apruebe y congele el contrato mínimo de eventos (incluyendo el evento futuro `ProductionCreated`).
-4. **Nombres de Campos DTO de `/kpis`:** Los nombres del JSON propuesto (`totalStatusChanges`, `currentStatusDistribution`, `transitions`, `cancelledCount`, `closedCount`, `partialCoverage`) están pendientes de aprobación formal por parte de Ignacio.
-5. **Reporte `top-services`:** Pendiente hasta contar con el identificador `serviceId` y el modelo de contratación de servicios en el dominio.
-6. **Tiempo de Montaje:** Propuesta de cálculo de duración `EN_MONTAJE` -> `EN_EJECUCION` pendiente de confirmación funcional.
-
-## 10. Seguridad y Trust Boundary (EMX-121)
-
-Actualmente, `ms-eventomax-report` opera bajo un modelo de **Trust Boundary** en red interna. 
-- El microservicio **no está expuesto públicamente**.
-- Se asume que la autenticación, validación del token JWT de Entra ID y autorización de roles (ej. rol `Admin`) son responsabilidad exclusiva del API Gateway y el BFF (`ms-eventomax-bff`).
-- Queda pendiente la implementación de OAuth2 Resource Server para validación de firma local (requiere definición de `issuer-uri` por parte de arquitectura).
+1. **Reporte `top-services`:** Pendiente hasta contar con el identificador `serviceId` y el modelo de contratación de servicios en el dominio (Productions solo reserva equipamiento en Catalog).
+2. **Tiempo de Montaje:** Propuesta de cálculo de duración `EN_MONTAJE` -> `EN_EJECUCION` pendiente de confirmación funcional.
+3. **Formalización de Resource Server en Report (EMX-121):** Presentada propuesta técnica con configuración externa (`ENTRA_ISSUER_URI`, `ENTRA_AUDIENCE`) y matriz de pruebas a la espera de autorización del Tech Leader.

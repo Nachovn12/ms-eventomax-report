@@ -1,21 +1,37 @@
 # Contrato REST y Rangos Temporales (EMX-80)
-**ESTADO: APROBADO CONDICIONADO por Ignacio para avanzar con EMX-81. Mapeo Kafka y DTOs definitivos NO congelados hasta aprobar el contrato mínimo de productions.events con Audit.**
 
-## 1. Endpoints (solo lectura)
+**ESTADO: ACTUALIZADO Y ALINEADO CON `productions.events` v1.0.**
+> **Alcance:** Define el contrato formal para el microservicio `ms-eventomax-report`, su read model y la integración contractual con los eventos de dominio de producciones. Distingue expresamente la compatibilidad contractual de la integración E2E en ambiente distribuido.
+
+---
+
+## 1. Endpoints de Lectura (REST)
+
 - `GET /api/report/kpis?range=last24h`
 - `GET /api/report/top-services?range=last7d`
 
-## 2. Rangos y semántica temporal (propuesta)
-- **Rangos aceptados:** `last24h` y `last7d` para ambos endpoints (top-services BLOQUEADO junto con el endpoint).
+### 1.1. Seguridad y Trust Boundary (Alineación EMX-121 y BFF)
+- **Rol Funcional Requerido:** `Admin`.
+- **Trust Boundary Vigente:** El BFF (`ms-eventomax-bff`) protege las rutas `/api/report/**` exigiendo el rol `Admin` y el scope `SCOPE_access_as_user` de Microsoft Entra ID.
+- **Propagación:** El BFF reenvía el header `Authorization` (Bearer token) hacia `REPORT_BASE_URL`.
+- **Exposición:** `ms-eventomax-report` es un servicio interno no expuesto a redes públicas.
+
+---
+
+## 2. Rangos y Semántica Temporal
+
+- **Rangos aceptados:** `last24h` y `last7d` para ambos endpoints.
 - **Valores por defecto (si no se envía el parámetro `range`):**
   - `last24h` en el endpoint de KPIs.
-  - `last7d` en el endpoint de top-services (BLOQUEADO junto con el endpoint).
-- **Ventana de tiempo:** `[ahora - duración, ahora]`. Se calculará utilizando la hora del servidor en UTC (`Instant`).
-- **Timestamps:** Los timestamps de respuesta se enviarán en formato ISO-8601 UTC. El timezone de visualización debe ser resuelto por el frontend.
-- **DECISIÓN PENDIENTE:** Evaluar si se acepta también el rango `last30d` u otros.
+  - `last7d` en el endpoint de top-services (actualmente responde `501 Not Implemented`).
+- **Ventana de tiempo:** `[now - duración, now]`. Se calcula utilizando la hora del servidor en UTC (`Instant`).
+- **Timestamps:** Los timestamps de respuesta se serializan en formato ISO-8601 UTC (`Instant`). La conversión a zona horaria local es responsabilidad del frontend.
+
+---
 
 ## 3. Manejo de Errores: 400 Bad Request (Rango inválido)
-Se propone utilizar el formato estándar ProblemDetail (RFC 9457) de Spring Boot para los errores de validación del parámetro `range`. (Nota: Esta es una propuesta a validar).
+
+Utiliza el estándar RFC 9457 `ProblemDetail` de Spring Framework para errores de validación del parámetro `range`.
 
 **Ejemplo JSON:**
 ```json
@@ -32,86 +48,116 @@ Se propone utilizar el formato estándar ProblemDetail (RFC 9457) de Spring Boot
 }
 ```
 
+---
+
 ## 4. Estructura de Respuesta (DTOs)
-### `/kpis`
-Se proponen 5 indicadores calculados sobre el evento `ProductionStatusChanged` filtrando por `occurredAt` dentro del rango (APROBADOS como base inicial):
-- Total de cambios de estado en el rango.
-- Conteo de producciones por estado actual: Último estado observado de las producciones que tienen transiciones registradas. No representa el total real de producciones.
-- Conteo de transiciones `previousStatus` -> `newStatus`.
-- Producciones canceladas en el rango (`newStatus` = CANCELADO).
-- Producciones cerradas en el rango (`newStatus` = CERRADO).
 
-Los nombres de campo del JSON de respuesta quedan como "PROPUESTA, a aprobar".
+### 4.1. `GET /api/report/kpis` (200 OK)
+Provee 5 indicadores calculados sobre los hechos persistidos de `ProductionStatusChanged` filtrando por `occurredAt` dentro de la ventana:
+1. `totalStatusChanges`: Total de transiciones de estado registradas en el rango.
+2. `currentStatusDistribution`: Distribución de estados observados (último estado de cada producción con transiciones en el rango, resuelto por mayor `occurredAt` y desempate determinista por `eventId DESC`). No es un inventario absoluto del sistema.
+3. `transitions`: Lista de transiciones observadas (`previousStatus` -> `newStatus`) con su respectivo conteo.
+4. `cancelledCount`: Cantidad de producciones canceladas (`newStatus = CANCELADO`) en el rango.
+5. `closedCount`: Cantidad de producciones cerradas (`newStatus = CERRADO`) en el rango.
 
-**Notas:**
-- Cobertura parcial: mientras solo existan cambios de estado, la respuesta de `/kpis` debe informar esta cobertura parcial y no presentarse como inventario completo.
-- Los kpis usan `ProductionStatusChanged`, `eventId` para idempotencia y `occurredAt` para rangos.
-- Criterio técnico para el KPI 2: el último estado de cada productionId se determina por mayor occurredAt, no por orden de llegada del mensaje.
+#### Advertencia Obligatoria de Cobertura Parcial:
+Dado que el microservicio únicamente procesa eventos de cambio de estado, la respuesta incluye explícitamente el objeto `partialCoverage`:
+```json
+"partialCoverage": {
+  "isPartial": true,
+  "description": "Métricas calculadas exclusivamente sobre eventos de transición de estado (ProductionStatusChanged). No representa el inventario total de producciones del sistema ni incluye producciones sin cambios de estado en el rango."
+}
+```
 
-### `/top-services`
-PENDIENTE hasta contar con `serviceId` y datos reales de contratación. No bloquea el read model.
+### 4.2. `GET /api/report/top-services` (501 Not Implemented)
+Retorna HTTP 501 `ProblemDetail`. Este endpoint permanece diferido debido a que el contrato v1.0 de `productions.events` y el modelo de dominio no publican `serviceId` ni contrataciones de servicios (Productions solo reserva equipamiento en Catalog).
 
-### Tiempo de montaje
-Propuesta EN_MONTAJE -> EN_EJECUCION, pendiente de confirmación funcional. No se implementa.
+---
 
-## 5. Matriz de Mapeo
-| Campo DTO de respuesta | Campo read model | Campo exacto en productions.events |
-| :--- | :--- | :--- |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | eventId | eventId (raíz del envelope, no dentro de payload) |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | type | type (raíz del envelope), se usa para procesar solo ProductionStatusChanged e ignorar otros tipos |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | productionId | payload.productionId |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | previousStatus | payload.previousStatus |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | newStatus | payload.newStatus |
-| n/a (la respuesta son agregados; estructura PROPUESTA, a aprobar) | occurredAt | payload.occurredAt (Instant UTC; es el campo que filtra por rango) |
+## 5. Read Model y Persistencia PostgreSQL
 
-### Campos NO usados
-| Campo | Razón de exclusión |
-| :--- | :--- |
-| organizerId | No requeridos por los KPIs propuestos |
-| productionName | No requeridos por los KPIs propuestos |
-| scheduledAt | No requeridos por los KPIs propuestos |
-| location | No requeridos por los KPIs propuestos |
-| timestamp | No requeridos por los KPIs propuestos |
-| traceId | Solo para logs |
-| correlationId | Solo para logs |
+El esquema de base de datos se versiona estrictamente mediante Flyway:
+- **Archivo de migración real:** `src/main/resources/db/migration/V1__create_report_read_model.sql`
+- **Validación JPA en producción/desarrollo:** `spring.jpa.hibernate.ddl-auto=validate`
 
-*Nota: EMX-81 puede usar solo las columnas de la matriz de la sección 5. No agregar campos hasta congelar el contrato.*
+### 5.1. Tablas y Claves Reales
 
-## 6. Contrato Kafka v0.1 (provisional)
+1. **`processed_event` (Control de Idempotencia):**
+   - `event_id UUID PRIMARY KEY`: Identificador único del evento recibido en el envelope.
+   - `processed_at TIMESTAMP WITH TIME ZONE NOT NULL`: Marca temporal UTC de inserción.
+   - *Garantía atómica:* Inserción nativa `INSERT INTO processed_event (event_id, processed_at) VALUES (:eventId, :processedAt) ON CONFLICT DO NOTHING`. Si retorna `0`, el evento es ignorado por duplicidad.
+
+2. **`report_production_fact` (Hechos de Estado):**
+   - `id UUID PRIMARY KEY`: Identificador único del hecho (clave primaria UUID, **no BIGINT**).
+   - `event_id UUID NOT NULL UNIQUE`: Clave foránea al evento procesado (`fk_report_fact_event REFERENCES processed_event(event_id)`).
+   - `type VARCHAR(50) NOT NULL`: Tipo de evento procesado (`ProductionStatusChanged`).
+   - `production_id BIGINT NOT NULL`: Identificador de la producción.
+   - `previous_status VARCHAR(50) NOT NULL`: Estado de origen (`chk_previous_status` enum).
+   - `new_status VARCHAR(50) NOT NULL`: Estado de destino (`chk_new_status` enum).
+   - `occurred_at TIMESTAMP WITH TIME ZONE NOT NULL`: Momento en que ocurrió el cambio (filtro temporal).
+
+### 5.2. Restricciones y Check Constraints
+- `CONSTRAINT fk_report_fact_event FOREIGN KEY (event_id) REFERENCES processed_event(event_id)`
+- `CONSTRAINT chk_previous_status CHECK (previous_status IN ('SOLICITADO', 'CONFIRMADO', 'EN_MONTAJE', 'EN_EJECUCION', 'CERRADO', 'CANCELADO'))`
+- `CONSTRAINT chk_new_status CHECK (new_status IN ('SOLICITADO', 'CONFIRMADO', 'EN_MONTAJE', 'EN_EJECUCION', 'CERRADO', 'CANCELADO'))`
+
+### 5.3. Índices Existentes
+- `idx_fact_occurred_at ON report_production_fact(occurred_at)`
+- `idx_fact_prod_occurred ON report_production_fact(production_id, occurred_at DESC)`
+- `idx_fact_status_occurred ON report_production_fact(new_status, occurred_at)`
+
+---
+
+## 6. Contrato Kafka `productions.events` v1.0
+
+### 6.1. Definición del Topic y Grupos
 - **Topic:** `productions.events`
-- **Serialización:** JSON
-- **Consumer group propuesto:** `report-group`
-- **Particiones locales:** 3
-- **DLT de Report:** `productions.events.report.DLT` (PROPUESTA de Ignacio, con reintentos acotados y coordinación con infraestructura; se confirma en EMX-71)
-- **Envelope:** `type`, `eventId`, `timestamp`, `traceId`, `correlationId`, `payload`
-- **Estados válidos:** SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO
+- **Consumer Group:** `report-group` (configurable vía `KAFKA_CONSUMER_GROUP`)
+- **DLT:** `productions.events.report.DLT` (configurable vía `KAFKA_TOPIC_REPORT_DLT`)
+- **Particiones mínimas:** 3
 
-## 7. Registro de decisiones
+### 6.2. Envelope v1.0 Oficial (`KafkaEventEnvelope<T>`)
+Emitido por `ms-eventomax-productions`:
+| Campo | Tipo | Requerido | Descripción |
+| :--- | :--- | :--- | :--- |
+| `schemaVersion` | String | Sí | Versión del esquema (`"1.0"`). |
+| `eventId` | UUID | Sí | Identificador único del evento (raíz del envelope). |
+| `type` | String | Sí | Tipo de evento (`ProductionCreated`, `ProductionStatusChanged`). |
+| `timestamp` | Instant (ISO-8601) | Sí | Timestamp de emisión del evento en el producer. |
+| `traceId` | String | No | Trace ID distribuido W3C / B3 para observabilidad. |
+| `correlationId` | String | No | Correlation ID de la transacción. |
+| `actor` | String | No | Usuario o sistema que gatilló el evento. |
+| `payload` | Object | Sí | Carga útil del evento de dominio. |
 
-### DECIDIDO
-*(Fecha: 2026-10-08 | Fuente: Ignacio Valeria, revisión commit 302b76d)*
-| Decisión | Detalle |
-| :--- | :--- |
-| KPIs aprobados | 5 KPIs propuestos aprobados como base inicial. |
-| Corrección KPI 2 | Último estado observado de producciones con transiciones; no es total real. |
-| Cobertura parcial | `/kpis` debe informar cobertura parcial si solo hay eventos de cambio de estado. |
-| Funcionalidades diferidas | `top-services` y tiempo de montaje quedan diferidos sin bloquear el read model. |
-| DLT propuesta | Nombre productions.events.report.DLT con reintentos acotados: PROPUESTA de Ignacio, se confirma en EMX-71. |
-| Preferencia JWT | Report validará JWT vía OAuth2 Resource Server si BFF propaga Bearer; auth Admin en BFF; no expuesto públicamente. |
+### 6.3. Eventos Emitidos por el Dominio
+1. **`ProductionStatusChanged` (Procesado por Report):**
+   - `payload.productionId`: Long
+   - `payload.organizerId`: String (ignorado por Report)
+   - `payload.productionName`: String (ignorado por Report)
+   - `payload.previousStatus`: String (SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO)
+   - `payload.newStatus`: String (SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO)
+   - `payload.scheduledAt`: String (ignorado por Report)
+   - `payload.location`: String (ignorado por Report)
+   - `payload.occurredAt`: Instant (ISO-8601 UTC)
 
-### PENDIENTE explícito
-| Elemento pendiente | Referencia / Tarea |
-| :--- | :--- |
-| Confirmar nombre DLT | EMX-71 |
-| Formalizar JWT | EMX-121 / EMX-72 |
-| Incluir ProductionCreated en el contrato | EMX-71 |
-| Aprobar y compartir contrato mínimo de productions.events con Audit | EMX-71 / Equipo |
-| Definir servicio contratado y serviceId | Pendiente |
-| Confirmación funcional del tiempo de montaje | Pendiente |
-| Decisión sobre rango last30d | Pendiente |
-| Congelar mapeo Kafka y DTOs definitivos (depende de aprobar el contrato mínimo con Audit) | EMX-71 / Equipo |
-| Aprobar nombres de campo del JSON de respuesta de /kpis | EMX-80 |
+2. **`ProductionCreated` (Ignorado por Report en Implementación Actual):**
+   - Emitido al crearse una producción (`status="SOLICITADO"`).
+   - **Comportamiento en Report:** El deserializador y mapeador `ProductionEventMapper` verifica `type`. Si es distinto de `ProductionStatusChanged`, registra un log informativo (`INFO`) y descarta el evento de forma segura sin arrojar error ni enviarlo a la DLT. Esto se debe a que el modelo analítico actual computa transiciones de estado observadas.
 
-## 8. Seguridad
-- **Rol Funcional Requerido:** Admin.
-- **Trust Boundary:** Preferencia de Ignacio: Report valida JWT con OAuth2 Resource Server si el BFF propaga el Bearer; la autorización Admin se mantiene en el BFF; el microservicio no se expone públicamente. Se formaliza en EMX-121/EMX-72. El BFF ya reenvía `Authorization` a Productions y Catalog, y la propagación hacia Report está pendiente de aprobación.
+### 6.4. Compatibilidad Contractual vs. Integración E2E
+- **Compatibilidad Contractual (Validada):** Report dispone del deserializador tolerante (Jackson con `FAIL_ON_UNKNOWN_PROPERTIES=false`), validación estricta de tipos de `ProductionStatusChanged`, filtro selectivo de `ProductionCreated`, inserción idempotente con `ON CONFLICT DO NOTHING`, y enrutamiento a DLT para mensajes corruptos. Validado con Testcontainers (PostgreSQL + Kafka).
+- **Integración E2E (Diferida):** La ejecución integrada en vivo con el clúster Kafka de AWS y el emisor de Producciones corresponde al sprint de integración E2E (EMX-78).
+
+---
+
+## 7. Prevención de Colisión de Puertos Locales
+
+En entornos locales Docker Compose:
+- `ms-eventomax-notify` mapea el puerto host `8083:8080`.
+- Para evitar colisiones de puerto en la máquina host de desarrollo sin alterar la configuración de Notify, `ms-eventomax-report` mapea el puerto host configurable:
+  ```yaml
+  ports:
+    - "${REPORT_PORT:-8085}:8080"
+  ```
+- En `.env.example`: `REPORT_PORT=8085`.
+- En la red interna de contenedores (`eventomax-net`), el servicio sigue escuchando en el puerto HTTP estándar `8080`.

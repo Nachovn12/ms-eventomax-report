@@ -30,6 +30,8 @@ services:
       KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-report-group}
       KAFKA_TOPIC_PRODUCTION_EVENTS: ${KAFKA_TOPIC_PRODUCTION_EVENTS:-productions.events}
       KAFKA_TOPIC_REPORT_DLT: ${KAFKA_TOPIC_REPORT_DLT:-productions.events.report.DLT}
+      ENTRA_ISSUER_URI: ${ENTRA_ISSUER_URI:-https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0}
+      ENTRA_AUDIENCE: ${ENTRA_AUDIENCE:-a1a87bcd-fed7-4d65-83c3-338389b80093}
     depends_on:
       postgres:
         condition: service_healthy

@@ -42,6 +42,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -188,7 +190,11 @@ public class ReportIntegrationTest {
             assertThat(facts).anyMatch(f -> f.getEventId().equals(eventId) && f.getNewStatus() == ProductionStatus.CONFIRMADO);
         });
 
-        mockMvc.perform(get("/api/report/kpis?range=last24h"))
+        mockMvc.perform(get("/api/report/kpis?range=last24h")
+                        .with(jwt().authorities(
+                                new SimpleGrantedAuthority("ROLE_Admin"),
+                                new SimpleGrantedAuthority("SCOPE_access_as_user")
+                        )))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.range").value("last24h"))
                 .andExpect(jsonPath("$.metrics.currentStatusDistribution.CONFIRMADO").exists())

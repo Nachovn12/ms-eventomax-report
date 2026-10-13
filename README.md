@@ -276,11 +276,38 @@ Con la aplicación en ejecución:
 
 ## 11. Seguridad y Trust Boundary (EMX-121)
 
-Actualmente, `ms-eventomax-report` opera bajo un modelo de **Trust Boundary** en red interna:
-- El microservicio **no está expuesto públicamente**.
-- La autenticación mediante Microsoft Entra ID y la autorización de roles (rol requerido: `Admin` con scope `SCOPE_access_as_user`) son gestionadas en el API Gateway y el BFF (`ms-eventomax-bff`).
-- El BFF propaga el header `Authorization` (Bearer token) hacia `REPORT_BASE_URL`.
-- La adopción formal de OAuth2 Resource Server en Report queda presentada y evaluada para autorización de arquitectura.
+El microservicio `ms-eventomax-report` opera bajo una arquitectura de **Defensa en Profundidad** y frontera de confianza (**Trust Boundary**) en red interna privada:
+
+### 11.1. Flujo de Autenticación y Autorización E2E
+1. **Angular SPA:** El usuario autentica sus credenciales contra **Microsoft Entra ID** (OAuth2 / OIDC) y adquiere un JWT Bearer que contiene los claims de identidad, roles asignados y scopes.
+2. **API Gateway:** Enruta perimetralmente el tráfico hacia la red interna sin exponer rutas públicas directas hacia Report.
+3. **BFF (`ms-eventomax-bff`):** Actúa como intermediario del frontend y propaga de forma intacta el encabezado `Authorization: Bearer <token>` hacia `REPORT_BASE_URL`.
+4. **Report (`ms-eventomax-report`):** Valida de forma autónoma y estricta el token recibido como OAuth2 Resource Server antes de procesar cualquier consulta analítica.
+
+### 11.2. Trust Boundary y Red Interna
+- **Aislamiento de Red:** Report reside en la red interna privada de contenedores Docker y **no posee ruta pública en el API Gateway** ni expone puertos al exterior en ambientes productivos (el puerto host local `8085` / `REPORT_PORT` se utiliza exclusivamente para depuración y pruebas locales).
+- **Superficie de Exposición Mínima:**
+  - Solo permite `GET /api/report/kpis` y `GET /api/report/top-services` con credenciales válidas.
+  - No permite ningún método de escritura (`POST`, `PUT`, `PATCH`, `DELETE`).
+  - Solo `GET /actuator/health` (y sus subrutas de liveness/readiness) está configurado como `permitAll` para el healthcheck de Docker.
+  - Swagger UI (`/swagger-ui/**`), especificación OpenAPI (`/v3/api-docs/**`) y cualquier otro endpoint de Actuator (`/actuator/info`, etc.) quedan denegados.
+
+### 11.3. Claims Exigidos y Reglas de Validación
+Para que un token sea considerado válido por Report, debe cumplir:
+- **`iss` (Issuer):** Debe coincidir con la URI del emisor de Microsoft Entra ID configurada en `ENTRA_ISSUER_URI`.
+- **`aud` (Audience):** Debe contener el identificador de audiencia registrado en `ENTRA_AUDIENCE`.
+- **Vigencia Temporal:** No expirado (`exp` y `nbf` válidos).
+- **Roles:** El claim `roles` (arreglo JSON de Entra) debe incluir `"Admin"` (mapeado a la autoridad `ROLE_Admin`).
+- **Scope:** El claim `scp` (cadena delimitada por espacios de Entra) debe incluir `"access_as_user"` (mapeado a `SCOPE_access_as_user`).
+- **Regla Combinada:** Se exige estrictamente `ROLE_Admin` **Y** `SCOPE_access_as_user`.
+
+### 11.4. Variables de Entorno de Seguridad
+- `ENTRA_ISSUER_URI`: `https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0` (configurable con fallback seguro).
+- `ENTRA_AUDIENCE`: `a1a87bcd-fed7-4d65-83c3-338389b80093` (identificador de aplicación de Report en Entra).
+
+### 11.5. Respuestas de Error (RFC 9457 ProblemDetail en Español)
+- **HTTP 401 Unauthorized (`title: "No autenticado"`):** Petición sin encabezado `Authorization`, token con firma corrupta, token expirado o audiencia incorrecta.
+- **HTTP 403 Forbidden (`title: "Acceso denegado"`):** Token válido perteneciente a otro rol funcional (`Productor`, `Organizador`, `Auditor`), token de administrador sin el scope `access_as_user`, o intento de invocación a métodos no permitidos (`POST`, `PUT`, `PATCH`, `DELETE`).
 
 ---
 

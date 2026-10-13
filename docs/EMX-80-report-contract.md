@@ -11,10 +11,10 @@
 - `GET /api/report/top-services?range=last7d`
 
 ### 1.1. Seguridad y Trust Boundary (Alineación EMX-121 y BFF)
-- **Rol Funcional Requerido:** `Admin`.
-- **Trust Boundary Vigente:** El BFF (`ms-eventomax-bff`) protege las rutas `/api/report/**` exigiendo el rol `Admin` y el scope `SCOPE_access_as_user` de Microsoft Entra ID.
-- **Propagación:** El BFF reenvía el header `Authorization` (Bearer token) hacia `REPORT_BASE_URL`.
-- **Exposición:** `ms-eventomax-report` es un servicio interno no expuesto a redes públicas.
+- **Defensa en Profundidad:** El BFF (`ms-eventomax-bff`) protege las rutas hacia Report y propaga el encabezado `Authorization: Bearer <token>`. Report valida de forma autónoma la firma, emisor (`ENTRA_ISSUER_URI`), audiencia (`ENTRA_AUDIENCE`) y vigencia del JWT como OAuth2 Resource Server.
+- **Roles y Scopes Exigidos:** Requiere simultáneamente la autoridad `ROLE_Admin` (claim `roles` con `"Admin"`) y `SCOPE_access_as_user` (claim `scp` con `"access_as_user"`).
+- **Mapeo de Errores:** Responde con RFC 9457 `ProblemDetail` en español: `401 Unauthorized` si no hay token o es inválido/audiencia incorrecta, y `403 Forbidden` si el rol no es Admin, falta el scope o se invoca un método de escritura.
+- **Exposición y Red Interna:** `ms-eventomax-report` reside en la red interna privada de microservicios sin ruta pública en el API Gateway ni puertos públicos expuestos.
 
 ---
 

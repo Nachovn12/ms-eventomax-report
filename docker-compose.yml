@@ -21,12 +21,18 @@ services:
       context: .
     container_name: eventomax-report-app
     ports:
-      - "8083:8080"
+      - "${REPORT_PORT:-8085}:8080"
     environment:
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-eventomax_report}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-report-group}
+      KAFKA_CONSUMER_AUTO_STARTUP: ${KAFKA_CONSUMER_AUTO_STARTUP:-true}
+      KAFKA_TOPIC_PRODUCTION_EVENTS: ${KAFKA_TOPIC_PRODUCTION_EVENTS:-productions.events}
+      KAFKA_TOPIC_REPORT_DLT: ${KAFKA_TOPIC_REPORT_DLT:-productions.events.report.DLT}
+      ENTRA_ISSUER_URI: ${ENTRA_ISSUER_URI:-https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0}
+      ENTRA_AUDIENCE: ${ENTRA_AUDIENCE:-a1a87bcd-fed7-4d65-83c3-338389b80093}
     depends_on:
       postgres:
         condition: service_healthy

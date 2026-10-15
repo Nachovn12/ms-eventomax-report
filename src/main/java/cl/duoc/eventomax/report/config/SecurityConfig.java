@@ -89,7 +89,7 @@ public class SecurityConfig {
     @Bean
     public JwtDecoder jwtDecoder(
             @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}") String issuerUri,
-            @Value("${app.security.audience}") String audience) {
+            @Value("${app.security.audience:${eventomax.security.jwt.audience:${ENTRA_AUDIENCE:}}}") String audience) {
         // SupplierJwtDecoder posterga el descubrimiento OIDC de Entra hasta el primer token recibido.
         // Esto evita dependencias de red en el arranque de la aplicación y en el healthcheck de Docker.
         return new SupplierJwtDecoder(() -> {

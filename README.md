@@ -302,8 +302,9 @@ Para que un token sea considerado válido por Report, debe cumplir:
 - **Regla Combinada:** Se exige estrictamente `ROLE_Admin` **Y** `SCOPE_access_as_user`.
 
 ### 11.4. Variables de Entorno de Seguridad
-- `ENTRA_ISSUER_URI`: `https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0` (configurable con fallback seguro).
-- `ENTRA_AUDIENCE`: `a1a87bcd-fed7-4d65-83c3-338389b80093` (identificador de aplicación de Report en Entra).
+- `ENTRA_ISSUER_URI`: URI del emisor de Microsoft Entra ID (en producción es estrictamente requerida desde el entorno sin valores por defecto inseguros).
+- `ENTRA_AUDIENCE`: Identificador de audiencia registrado de Report (requerida en producción sin valores por defecto inseguros).
+- `KAFKA_CONSUMER_AUTO_STARTUP`: Permite controlar el arranque automático del consumidor Kafka (`true`/`false`), compatible también con `KAFKA_LISTENER_AUTO_STARTUP`.
 
 ### 11.5. Respuestas de Error (RFC 9457 ProblemDetail en Español)
 - **HTTP 401 Unauthorized (`title: "No autenticado"`):** Petición sin encabezado `Authorization`, token con firma corrupta, token expirado o audiencia incorrecta.
@@ -313,6 +314,11 @@ Para que un token sea considerado válido por Report, debe cumplir:
 
 ## 12. Pendientes y Decisiones Abiertas del Contrato
 
-1. **Reporte `top-services`:** Pendiente hasta contar con el identificador `serviceId` y el modelo de contratación de servicios en el dominio (Productions solo reserva equipamiento en Catalog).
+1. **Estado del Reporte `top-services` (GET /api/report/top-services):**
+   - Responde HTTP 501 `Not Implemented` (`TopServicesNotImplementedException`) con ProblemDetail en español de forma intencional y determinística.
+   - **Causa raíz:** El contrato Kafka v1.0 de `ms-eventomax-productions` (`productions.events`) solo publica transiciones de estado (`ProductionStatusChanged`) y creación básica (`ProductionCreated`), sin campos de identificación de servicios (`serviceId`), líneas de detalle ni montos de arriendo. Adicionalmente, `ms-eventomax-catalog` opera de manera síncrona mediante REST para reservas de inventario y no publica eventos de contratación a Kafka.
+   - **Propuesta mínima compatible con Kafka v1 y EP2:**
+     - *Opción A (Recomendada):* Extender el payload de `ProductionStatusChanged` (o nuevo evento `ProductionServicesAssigned`) con un arreglo opcional `services: [ { "serviceId": Long, "serviceName": String, "quantity": Integer } ]`.
+     - *Opción B:* Publicar desde `ms-eventomax-catalog` un evento de dominio `ServiceReservedEvent` / `ServiceContractedEvent` en un tópico dedicado consumido por Report.
+   - Hasta que la arquitectura autorice la extensión del contrato emisor, Report mantiene honestamente la respuesta 501 y el flag `partialCoverage: true` en `/api/report/kpis`.
 2. **Tiempo de Montaje:** Propuesta de cálculo de duración `EN_MONTAJE` -> `EN_EJECUCION` pendiente de confirmación funcional.
-3. **Formalización de Resource Server en Report (EMX-121):** Presentada propuesta técnica con configuración externa (`ENTRA_ISSUER_URI`, `ENTRA_AUDIENCE`) y matriz de pruebas a la espera de autorización del Tech Leader.

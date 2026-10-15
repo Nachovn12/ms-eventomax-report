@@ -17,3 +17,14 @@ spring:
     bootstrap-servers: localhost:9092
     listener:
       auto-startup: false
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0
+
+app:
+  security:
+    audience: a1a87bcd-fed7-4d65-83c3-338389b80093
+

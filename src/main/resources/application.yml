@@ -25,17 +25,17 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     listener:
-      auto-startup: ${KAFKA_LISTENER_AUTO_STARTUP:true}
+      auto-startup: ${KAFKA_CONSUMER_AUTO_STARTUP:${KAFKA_LISTENER_AUTO_STARTUP:true}}
 
   security:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: ${ENTRA_ISSUER_URI:https://login.microsoftonline.com/f191bdc8-7926-4722-9ec0-cba663701940/v2.0}
+          issuer-uri: ${ENTRA_ISSUER_URI}
 
 app:
   security:
-    audience: ${ENTRA_AUDIENCE:a1a87bcd-fed7-4d65-83c3-338389b80093}
+    audience: ${ENTRA_AUDIENCE}
   kafka:
     topic:
       production-events: ${KAFKA_TOPIC_PRODUCTION_EVENTS:productions.events}

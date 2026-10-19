@@ -1,7 +1,7 @@
 package cl.duoc.eventomax.report.controller;
 
 import cl.duoc.eventomax.report.dto.KpisReportResponse;
-import cl.duoc.eventomax.report.exception.TopServicesNotImplementedException;
+import cl.duoc.eventomax.report.dto.TopServicesReportResponse;
 import cl.duoc.eventomax.report.model.enums.ReportRange;
 import cl.duoc.eventomax.report.service.ReportService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -44,18 +44,19 @@ public class ReportController {
         return ResponseEntity.ok(response);
     }
 
-    @GetMapping(value = "/top-services", produces = MediaType.APPLICATION_PROBLEM_JSON_VALUE)
-    @Operation(summary = "Obtener top servicios contratados (Diferido)", description = "Endpoint diferido por falta de serviceId y datos contractuales de contratación de servicios en el contrato actual.")
+    @GetMapping(value = "/top-services", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Obtener top servicios contratados", description = "Calcula el ranking de servicios más contratados en la ventana temporal especificada.")
     @ApiResponses({
-            @ApiResponse(responseCode = "501", description = "Funcionalidad no implementada",
-                    content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class))),
+            @ApiResponse(responseCode = "200", description = "Ranking de servicios calculado exitosamente",
+                    content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE, schema = @Schema(implementation = TopServicesReportResponse.class))),
             @ApiResponse(responseCode = "400", description = "Rango temporal inválido",
                     content = @Content(mediaType = MediaType.APPLICATION_PROBLEM_JSON_VALUE, schema = @Schema(implementation = ProblemDetail.class)))
     })
-    public ResponseEntity<Void> getTopServices(
+    public ResponseEntity<TopServicesReportResponse> getTopServices(
             @RequestParam(name = "range", required = false, defaultValue = "last7d") String rangeParam) {
-        ReportRange.fromString(rangeParam);
-        throw new TopServicesNotImplementedException();
+        ReportRange range = ReportRange.fromString(rangeParam);
+        TopServicesReportResponse response = reportService.calculateTopServices(range);
+        return ResponseEntity.ok(response);
     }
 }
 

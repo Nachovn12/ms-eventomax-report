@@ -4,6 +4,8 @@ import cl.duoc.eventomax.report.controller.advice.ReportExceptionHandler;
 import cl.duoc.eventomax.report.dto.KpiMetricsDto;
 import cl.duoc.eventomax.report.dto.KpisReportResponse;
 import cl.duoc.eventomax.report.dto.PartialCoverageDto;
+import cl.duoc.eventomax.report.dto.TopServiceItemDto;
+import cl.duoc.eventomax.report.dto.TopServicesReportResponse;
 import cl.duoc.eventomax.report.dto.TransitionCountDto;
 import cl.duoc.eventomax.report.model.enums.ProductionStatus;
 import cl.duoc.eventomax.report.model.enums.ReportRange;
@@ -114,20 +116,58 @@ public class ReportControllerTest {
     }
 
     @Test
-    void testGetTopServicesDefaultRangeReturns501ProblemDetail() throws Exception {
+    void testGetTopServicesDefaultRangeReturns200WithItems() throws Exception {
+        Instant now = Instant.parse("2026-10-11T12:00:00Z");
+        Instant from = now.minusSeconds(7 * 86400);
+        TopServicesReportResponse mockResponse = new TopServicesReportResponse(
+                "last7d",
+                from,
+                now,
+                now,
+                new PartialCoverageDto(true, "Ranking calculado exclusivamente sobre contrataciones registradas"),
+                List.of(
+                        new cl.duoc.eventomax.report.dto.TopServiceItemDto(10L, "Sonido Pro", 5L),
+                        new cl.duoc.eventomax.report.dto.TopServiceItemDto(20L, "Iluminación LED", 3L)
+                )
+        );
+
+        when(reportService.calculateTopServices(eq(ReportRange.LAST_7D)))
+                .thenReturn(mockResponse);
+
         mockMvc.perform(get("/api/report/top-services"))
-                .andExpect(status().isNotImplemented())
-                .andExpect(jsonPath("$.status", is(501)))
-                .andExpect(jsonPath("$.title", is("Funcionalidad no implementada")))
-                .andExpect(jsonPath("$.detail", is("El reporte de top-services está diferido: requiere serviceId y datos reales de contratación de servicios no disponibles en el contrato actual.")))
-                .andExpect(jsonPath("$.instance", is("/api/report/top-services")));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.range", is("last7d")))
+                .andExpect(jsonPath("$.partialCoverage.isPartial", is(true)))
+                .andExpect(jsonPath("$.items.length()", is(2)))
+                .andExpect(jsonPath("$.items[0].serviceId", is(10)))
+                .andExpect(jsonPath("$.items[0].serviceName", is("Sonido Pro")))
+                .andExpect(jsonPath("$.items[0].hireCount", is(5)))
+                .andExpect(jsonPath("$.items[1].serviceId", is(20)))
+                .andExpect(jsonPath("$.items[1].serviceName", is("Iluminación LED")))
+                .andExpect(jsonPath("$.items[1].hireCount", is(3)));
     }
 
     @Test
-    void testGetTopServicesWithRangeLast7dReturns501() throws Exception {
-        mockMvc.perform(get("/api/report/top-services").param("range", "last7d"))
-                .andExpect(status().isNotImplemented())
-                .andExpect(jsonPath("$.status", is(501)));
+    void testGetTopServicesEmptyListWhenNoDataReturns200() throws Exception {
+        Instant now = Instant.parse("2026-10-11T12:00:00Z");
+        Instant from = now.minusSeconds(86400);
+        TopServicesReportResponse mockResponse = new TopServicesReportResponse(
+                "last24h",
+                from,
+                now,
+                now,
+                new PartialCoverageDto(true, "Ranking calculado exclusivamente sobre contrataciones registradas"),
+                List.of()
+        );
+
+        when(reportService.calculateTopServices(eq(ReportRange.LAST_24H)))
+                .thenReturn(mockResponse);
+
+        mockMvc.perform(get("/api/report/top-services").param("range", "last24h"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.range", is("last24h")))
+                .andExpect(jsonPath("$.partialCoverage.isPartial", is(true)))
+                .andExpect(jsonPath("$.items.length()", is(0)));
     }
 
     @Test

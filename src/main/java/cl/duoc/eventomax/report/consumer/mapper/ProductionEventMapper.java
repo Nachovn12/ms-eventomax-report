@@ -119,7 +119,8 @@ public class ProductionEventMapper {
                 newStatus,
                 occurredAt,
                 envelope.traceId(),
-                envelope.correlationId()
+                envelope.correlationId(),
+                payload.services()
         ));
     }
 }

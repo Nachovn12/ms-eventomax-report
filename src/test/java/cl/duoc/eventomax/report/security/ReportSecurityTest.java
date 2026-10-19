@@ -3,6 +3,7 @@ package cl.duoc.eventomax.report.security;
 import cl.duoc.eventomax.report.dto.KpiMetricsDto;
 import cl.duoc.eventomax.report.dto.KpisReportResponse;
 import cl.duoc.eventomax.report.dto.PartialCoverageDto;
+import cl.duoc.eventomax.report.dto.TopServicesReportResponse;
 import cl.duoc.eventomax.report.dto.TransitionCountDto;
 import cl.duoc.eventomax.report.model.enums.ProductionStatus;
 import cl.duoc.eventomax.report.model.enums.ReportRange;
@@ -172,17 +173,19 @@ public class ReportSecurityTest {
     }
 
     @Test
-    @DisplayName("Token válido con ROLE_Admin Y SCOPE_access_as_user a GET /api/report/top-services debe responder 501 Not Implemented")
-    void testGetTopServicesWithAdminAndScopeReturns501ProblemDetail() throws Exception {
+    @DisplayName("Token válido con ROLE_Admin Y SCOPE_access_as_user a GET /api/report/top-services debe responder 200 OK")
+    void testGetTopServicesWithAdminAndScopeReturns200Ok() throws Exception {
+        when(reportService.calculateTopServices(any()))
+                .thenReturn(new TopServicesReportResponse("last7d", Instant.now(), Instant.now(), Instant.now(), new PartialCoverageDto(true, "desc"), List.of()));
+
         mockMvc.perform(get("/api/report/top-services")
                         .with(jwt().authorities(
                                 new SimpleGrantedAuthority("ROLE_Admin"),
                                 new SimpleGrantedAuthority("SCOPE_access_as_user")
                         )))
-                .andExpect(status().isNotImplemented())
-                .andExpect(jsonPath("$.status", is(501)))
-                .andExpect(jsonPath("$.title", is("Funcionalidad no implementada")))
-                .andExpect(jsonPath("$.instance", is("/api/report/top-services")));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.range", is("last7d")))
+                .andExpect(jsonPath("$.partialCoverage.isPartial", is(true)));
     }
 
     @Test

@@ -1,6 +1,7 @@
 package cl.duoc.eventomax.report.consumer.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record ProductionEventPayloadDto(
@@ -11,6 +12,7 @@ public record ProductionEventPayloadDto(
         String newStatus,
         String scheduledAt,
         String location,
-        String occurredAt
+        String occurredAt,
+        List<ContractedServiceEventDto> services
 ) {}
 

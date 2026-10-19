@@ -3,12 +3,17 @@ package cl.duoc.eventomax.report.service.impl;
 import cl.duoc.eventomax.report.dto.KpiMetricsDto;
 import cl.duoc.eventomax.report.dto.KpisReportResponse;
 import cl.duoc.eventomax.report.dto.PartialCoverageDto;
+import cl.duoc.eventomax.report.dto.TopServiceItemDto;
+import cl.duoc.eventomax.report.dto.TopServicesReportResponse;
 import cl.duoc.eventomax.report.dto.TransitionCountDto;
 import cl.duoc.eventomax.report.model.ReportProductionFact;
 import cl.duoc.eventomax.report.model.enums.ProductionStatus;
 import cl.duoc.eventomax.report.model.enums.ReportRange;
 import cl.duoc.eventomax.report.repository.ReportProductionFactRepository;
+import cl.duoc.eventomax.report.repository.ReportServiceHireFactRepository;
+import cl.duoc.eventomax.report.repository.TopServiceProjection;
 import cl.duoc.eventomax.report.service.ReportService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,12 +43,26 @@ public class ReportServiceImpl implements ReportService {
             "Métricas calculadas exclusivamente sobre eventos de transición de estado (ProductionStatusChanged). " +
             "No representa el inventario total de producciones del sistema ni incluye producciones sin cambios de estado en el rango.";
 
+    private static final String PARTIAL_COVERAGE_TOP_SERVICES_DESCRIPTION =
+            "Ranking calculado exclusivamente sobre contrataciones registradas en eventos de transición a CONFIRMADO (ProductionStatusChanged). " +
+            "Excluye producciones canceladas conocidas y no refleja producciones anteriores a la captura de contrataciones.";
+
     private final ReportProductionFactRepository factRepository;
+    private final ReportServiceHireFactRepository serviceHireFactRepository;
     private final Clock clock;
 
-    public ReportServiceImpl(ReportProductionFactRepository factRepository, Clock clock) {
+    @Autowired
+    public ReportServiceImpl(
+            ReportProductionFactRepository factRepository,
+            ReportServiceHireFactRepository serviceHireFactRepository,
+            Clock clock) {
         this.factRepository = factRepository;
+        this.serviceHireFactRepository = serviceHireFactRepository;
         this.clock = clock;
+    }
+
+    public ReportServiceImpl(ReportProductionFactRepository factRepository, Clock clock) {
+        this(factRepository, null, clock);
     }
 
     @Override
@@ -99,6 +118,36 @@ public class ReportServiceImpl implements ReportService {
                 generatedAt,
                 partialCoverage,
                 metrics
+        );
+    }
+
+    @Override
+    public TopServicesReportResponse calculateTopServices(ReportRange range) {
+        Instant to = clock.instant();
+        Instant from = to.minus(range.getDuration());
+        Instant generatedAt = to;
+
+        List<TopServiceItemDto> items = List.of();
+        if (serviceHireFactRepository != null) {
+            List<TopServiceProjection> projections = serviceHireFactRepository.findTopServices(from, to);
+            items = projections.stream()
+                    .map(p -> new TopServiceItemDto(
+                            p.getServiceId(),
+                            p.getServiceName(),
+                            p.getHireCount() != null ? p.getHireCount() : 0L
+                    ))
+                    .toList();
+        }
+
+        PartialCoverageDto partialCoverage = new PartialCoverageDto(true, PARTIAL_COVERAGE_TOP_SERVICES_DESCRIPTION);
+
+        return new TopServicesReportResponse(
+                range.getValue(),
+                from,
+                to,
+                generatedAt,
+                partialCoverage,
+                items
         );
     }
 }

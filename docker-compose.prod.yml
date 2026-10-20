@@ -3,6 +3,8 @@ services:
     build:
       context: .
     container_name: eventomax-report-prod
+    expose:
+      - "8080"
     restart: always
     environment:
       DB_URL: ${DB_URL}
@@ -16,10 +18,12 @@ services:
       ENTRA_ISSUER_URI: ${ENTRA_ISSUER_URI}
       ENTRA_AUDIENCE: ${ENTRA_AUDIENCE}
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError}
     networks:
-      - eventomax-net
+      eventomax-net:
+        aliases:
+          - ms-eventomax-report
 
 networks:
   eventomax-net:
     external: true
-

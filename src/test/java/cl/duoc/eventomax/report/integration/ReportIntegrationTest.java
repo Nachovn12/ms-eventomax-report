@@ -11,16 +11,21 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.core.env.Environment;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -53,6 +58,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 public class ReportIntegrationTest {
 
+    private static final Logger log = LoggerFactory.getLogger(ReportIntegrationTest.class);
+
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:15-alpine"))
             .withDatabaseName("eventomax_report")
             .withUsername("testuser")
@@ -67,8 +74,30 @@ public class ReportIntegrationTest {
         kafka.start();
     }
 
+    private static void assertEphemeralContainersIsolatedBeforeContext() {
+        if (!postgres.isRunning() || !kafka.isRunning()) {
+            throw new IllegalStateException("Testcontainers PostgreSQL y Kafka deben estar en ejecución antes de iniciar el contexto Spring.");
+        }
+        String ephemeralBootstrap = kafka.getBootstrapServers();
+        if (ephemeralBootstrap == null || ephemeralBootstrap.isBlank()
+                || ephemeralBootstrap.contains(":9092") || ephemeralBootstrap.contains(":29092")) {
+            throw new IllegalStateException("Aislamiento Kafka violado: bootstrap-servers efímero inválido o apunta al puerto persistente 9092: " + ephemeralBootstrap);
+        }
+        String jdbcUrl = postgres.getJdbcUrl();
+        if (jdbcUrl == null || jdbcUrl.isBlank()
+                || jdbcUrl.contains(":5432/") || jdbcUrl.contains(":5433/")
+                || jdbcUrl.contains(":5434/") || jdbcUrl.contains(":5435/")) {
+            throw new IllegalStateException("Aislamiento PostgreSQL violado: JDBC URL apunta a un puerto de base persistente: " + jdbcUrl);
+        }
+    }
+
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
+        assertEphemeralContainersIsolatedBeforeContext();
+
+        registry.add("DB_URL", postgres::getJdbcUrl);
+        registry.add("DB_USER", postgres::getUsername);
+        registry.add("DB_PASSWORD", postgres::getPassword);
         registry.add("spring.datasource.url", postgres::getJdbcUrl);
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
@@ -77,9 +106,15 @@ public class ReportIntegrationTest {
         registry.add("spring.jpa.database-platform", () -> "org.hibernate.dialect.PostgreSQLDialect");
         registry.add("spring.flyway.enabled", () -> "true");
 
+        registry.add("KAFKA_BOOTSTRAP_SERVERS", kafka::getBootstrapServers);
         registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("spring.kafka.consumer.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("spring.kafka.producer.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("spring.kafka.admin.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("spring.kafka.admin.auto-create", () -> "false");
         registry.add("spring.kafka.consumer.group-id", () -> "report-integration-group");
         registry.add("spring.kafka.listener.auto-startup", () -> "true");
+        registry.add("KAFKA_CONSUMER_AUTO_STARTUP", () -> "true");
         registry.add("KAFKA_LISTENER_AUTO_STARTUP", () -> "true");
         registry.add("spring.kafka.consumer.auto-offset-reset", () -> "earliest");
         registry.add("app.kafka.retry.backoff-interval-ms", () -> "200");
@@ -88,6 +123,12 @@ public class ReportIntegrationTest {
 
     @Autowired
     private KafkaTemplate<String, String> dltKafkaTemplate;
+
+    @Autowired
+    private ConsumerFactory<String, String> consumerFactory;
+
+    @Autowired
+    private Environment environment;
 
     @Autowired
     private ProcessedEventRepository processedEventRepository;
@@ -106,6 +147,7 @@ public class ReportIntegrationTest {
 
     @BeforeAll
     static void setupKafka() throws Exception {
+        assertEphemeralContainersIsolatedBeforeContext();
         try (AdminClient admin = AdminClient.create(Map.of("bootstrap.servers", kafka.getBootstrapServers()))) {
             admin.createTopics(List.of(
                     new NewTopic("productions.events", 3, (short) 1),
@@ -125,11 +167,46 @@ public class ReportIntegrationTest {
 
     @BeforeEach
     void ensureListenerStarted() {
+        verifyEffectiveKafkaAndDatabaseIsolation();
         for (var container : kafkaListenerEndpointRegistry.getListenerContainers()) {
             if (!container.isRunning()) {
                 container.start();
             }
         }
+    }
+
+    private void verifyEffectiveKafkaAndDatabaseIsolation() {
+        assertEphemeralContainersIsolatedBeforeContext();
+        String expectedBootstrap = kafka.getBootstrapServers();
+
+        String envBootstrap = environment.getProperty("spring.kafka.bootstrap-servers");
+        String envConsumerBootstrap = environment.getProperty("spring.kafka.consumer.bootstrap-servers");
+        String envProducerBootstrap = environment.getProperty("spring.kafka.producer.bootstrap-servers");
+        String envAdminBootstrap = environment.getProperty("spring.kafka.admin.bootstrap-servers");
+
+        Object producerBootstrap = dltKafkaTemplate.getProducerFactory()
+                .getConfigurationProperties()
+                .get(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG);
+        Object consumerBootstrap = consumerFactory
+                .getConfigurationProperties()
+                .get(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG);
+
+        assertThat(envBootstrap).isEqualTo(expectedBootstrap).doesNotContain(":9092");
+        assertThat(envConsumerBootstrap).isEqualTo(expectedBootstrap).doesNotContain(":9092");
+        assertThat(envProducerBootstrap).isEqualTo(expectedBootstrap).doesNotContain(":9092");
+        assertThat(envAdminBootstrap).isEqualTo(expectedBootstrap).doesNotContain(":9092");
+        assertThat(String.valueOf(producerBootstrap)).contains(expectedBootstrap).doesNotContain(":9092");
+        assertThat(String.valueOf(consumerBootstrap)).contains(expectedBootstrap).doesNotContain(":9092");
+        assertThat(environment.getProperty("spring.datasource.url"))
+                .isEqualTo(postgres.getJdbcUrl())
+                .doesNotContain(":5432/")
+                .doesNotContain(":5433/")
+                .doesNotContain(":5434/");
+    }
+
+    private void publishToIsolatedKafka(String topic, String key, String payload) {
+        verifyEffectiveKafkaAndDatabaseIsolation();
+        dltKafkaTemplate.send(topic, key, payload);
     }
 
     @AfterAll
@@ -182,7 +259,7 @@ public class ReportIntegrationTest {
             }
             """, eventId, Instant.now(), productionId, occurredAt);
 
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), validV1Payload);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), validV1Payload);
 
         await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(processedEventRepository.existsById(eventId)).isTrue();
@@ -232,7 +309,7 @@ public class ReportIntegrationTest {
             """, duplicateEventId, Instant.now(), productionId, occurredAt);
 
         // Envío inicial
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), eventJson);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), eventJson);
 
         await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(processedEventRepository.existsById(duplicateEventId)).isTrue();
@@ -241,7 +318,7 @@ public class ReportIntegrationTest {
         long initialFactCount = reportProductionFactRepository.count();
 
         // Reenvío del mismo mensaje (duplicado)
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), eventJson);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), eventJson);
 
         // Dar margen y verificar que no se duplica el hecho
         await().pollDelay(1, TimeUnit.SECONDS).atMost(5, TimeUnit.SECONDS).untilAsserted(() -> {
@@ -274,7 +351,7 @@ public class ReportIntegrationTest {
             """, eventId2, Instant.now(), productionId, t2Later);
 
         // Llega primero el evento más nuevo (EN_EJECUCION en t2Later)
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), newerEvent);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), newerEvent);
 
         await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(processedEventRepository.existsById(eventId2)).isTrue();
@@ -298,7 +375,7 @@ public class ReportIntegrationTest {
             """, eventId1, Instant.now(), productionId, t1Earlier);
 
         // Llega después el evento más antiguo (CONFIRMADO en t1Earlier)
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), olderEvent);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), olderEvent);
 
         await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
             assertThat(processedEventRepository.existsById(eventId1)).isTrue();
@@ -339,7 +416,7 @@ public class ReportIntegrationTest {
             }
             """, eventId, Instant.now(), productionId, Instant.now());
 
-        dltKafkaTemplate.send("productions.events", String.valueOf(productionId), createdEvent);
+        publishToIsolatedKafka("productions.events", String.valueOf(productionId), createdEvent);
 
         // No debe insertarse en processed_event ni en facts
         await().pollDelay(1, TimeUnit.SECONDS).atMost(4, TimeUnit.SECONDS).untilAsserted(() -> {
@@ -361,7 +438,7 @@ public class ReportIntegrationTest {
             }
             """;
 
-        dltKafkaTemplate.send("productions.events", "invalid-key", invalidJsonPayload);
+        publishToIsolatedKafka("productions.events", "invalid-key", invalidJsonPayload);
 
         await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
             ConsumerRecords<String, String> records = dltConsumer.poll(Duration.ofMillis(500));
@@ -374,5 +451,139 @@ public class ReportIntegrationTest {
             }
             assertThat(found).isTrue();
         });
+    }
+
+    @Test
+    @DisplayName("Debe procesar ciclo de vida completo de contrato Productions Outbox (ProductionCreated + ProductionStatusChanged), deduplicar reenvíos e impactar /api/report/kpis")
+    void testProductionsOutboxLifecycleContractWithIdempotencyAndKpis() throws Exception {
+        long productionId = 91001L;
+        String partitionKey = String.valueOf(productionId);
+
+        Instant now = Instant.now();
+        Instant tCreated = now.minusSeconds(300);
+        Instant tConfirmado = now.minusSeconds(240);
+        Instant tEnMontaje = now.minusSeconds(180);
+        Instant tEnEjecucion = now.minusSeconds(120);
+        Instant tCerrado = now.minusSeconds(60);
+
+        UUID createdEventId = UUID.randomUUID();
+        UUID statusEventId1 = UUID.randomUUID();
+        UUID statusEventId2 = UUID.randomUUID();
+        UUID statusEventId3 = UUID.randomUUID();
+        UUID statusEventId4 = UUID.randomUUID();
+
+        long baselineFactCount = reportProductionFactRepository.count();
+        long baselineCerradoCount = reportProductionFactRepository.findAll().stream()
+                .filter(f -> f.getNewStatus() == ProductionStatus.CERRADO)
+                .count();
+        long baselineCerradoDistribution = reportProductionFactRepository.findCurrentStatusOfAllProductions().stream()
+                .filter(f -> f.getNewStatus() == ProductionStatus.CERRADO)
+                .count();
+
+        // 1. Evento ProductionCreated emitido por OutboxRelay de Productions (debe ser ignorado sin error)
+        String productionCreatedJson = String.format("""
+            {
+              "schemaVersion": "1.0",
+              "eventId": "%s",
+              "type": "ProductionCreated",
+              "timestamp": "%s",
+              "traceId": "trace-lifecycle-91001",
+              "correlationId": "corr-lifecycle-91001",
+              "actor": "sub-productor-ep2",
+              "payload": {
+                "productionId": %d,
+                "organizerId": "org-ep2",
+                "productionName": "Produccion Contrato Outbox EP2",
+                "status": "SOLICITADO",
+                "scheduledAt": "2026-11-20T20:00:00.123456",
+                "location": "Movistar Arena",
+                "occurredAt": "%s"
+              }
+            }
+            """, createdEventId, tCreated, productionId, tCreated);
+
+        // 2. Secuencia causal de transiciones ProductionStatusChanged
+        String toConfirmadoJson = buildProductionsOutboxStatusChangedJson(
+                statusEventId1, productionId, "SOLICITADO", "CONFIRMADO", tConfirmado);
+        String toEnMontajeJson = buildProductionsOutboxStatusChangedJson(
+                statusEventId2, productionId, "CONFIRMADO", "EN_MONTAJE", tEnMontaje);
+        String toEnEjecucionJson = buildProductionsOutboxStatusChangedJson(
+                statusEventId3, productionId, "EN_MONTAJE", "EN_EJECUCION", tEnEjecucion);
+        String toCerradoJson = buildProductionsOutboxStatusChangedJson(
+                statusEventId4, productionId, "EN_EJECUCION", "CERRADO", tCerrado);
+
+        publishToIsolatedKafka("productions.events", partitionKey, productionCreatedJson);
+        publishToIsolatedKafka("productions.events", partitionKey, toConfirmadoJson);
+        // Reenvío duplicado del primer cambio de estado (simula at-least-once de OutboxRelay)
+        publishToIsolatedKafka("productions.events", partitionKey, toConfirmadoJson);
+        publishToIsolatedKafka("productions.events", partitionKey, toEnMontajeJson);
+        publishToIsolatedKafka("productions.events", partitionKey, toEnEjecucionJson);
+        publishToIsolatedKafka("productions.events", partitionKey, toCerradoJson);
+
+        await().atMost(15, TimeUnit.SECONDS).untilAsserted(() -> {
+            assertThat(processedEventRepository.existsById(statusEventId1)).isTrue();
+            assertThat(processedEventRepository.existsById(statusEventId2)).isTrue();
+            assertThat(processedEventRepository.existsById(statusEventId3)).isTrue();
+            assertThat(processedEventRepository.existsById(statusEventId4)).isTrue();
+        });
+
+        // ProductionCreated no debe haberse registrado en processed_event ni en report_production_fact
+        assertThat(processedEventRepository.existsById(createdEventId)).isFalse();
+
+        // Exactamente 4 hechos persistidos para productionId=91001L (el duplicado de statusEventId1 fue deduplicado)
+        List<ReportProductionFact> prodFacts = reportProductionFactRepository.findAll().stream()
+                .filter(f -> f.getProductionId().equals(productionId))
+                .toList();
+        assertThat(prodFacts).hasSize(4);
+        assertThat(reportProductionFactRepository.count()).isEqualTo(baselineFactCount + 4);
+
+        // El estado actual resuelto para 91001L debe ser CERRADO
+        ReportProductionFact currentForProduction = reportProductionFactRepository.findCurrentStatusOfAllProductions().stream()
+                .filter(f -> f.getProductionId().equals(productionId))
+                .findFirst()
+                .orElseThrow();
+        assertThat(currentForProduction.getNewStatus()).isEqualTo(ProductionStatus.CERRADO);
+        assertThat(currentForProduction.getEventId()).isEqualTo(statusEventId4);
+
+        log.info("Verificación aislada Report Kafka OK: bootstrap={}, factsDeProduccion={}, estadoActual={}",
+                kafka.getBootstrapServers(), prodFacts.size(), currentForProduction.getNewStatus());
+
+        // Verificar impacto exacto en GET /api/report/kpis?range=last24h
+        mockMvc.perform(get("/api/report/kpis?range=last24h")
+                        .with(jwt().authorities(
+                                new SimpleGrantedAuthority("ROLE_Admin"),
+                                new SimpleGrantedAuthority("SCOPE_access_as_user")
+                        )))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.range").value("last24h"))
+                .andExpect(jsonPath("$.partialCoverage.isPartial").value(true))
+                .andExpect(jsonPath("$.metrics.totalStatusChanges").value(baselineFactCount + 4))
+                .andExpect(jsonPath("$.metrics.closedCount").value(baselineCerradoCount + 1))
+                .andExpect(jsonPath("$.metrics.currentStatusDistribution.CERRADO").value(baselineCerradoDistribution + 1));
+    }
+
+    private static String buildProductionsOutboxStatusChangedJson(
+            UUID eventId, long productionId, String previousStatus, String newStatus, Instant occurredAt) {
+        return String.format("""
+            {
+              "schemaVersion": "1.0",
+              "eventId": "%s",
+              "type": "ProductionStatusChanged",
+              "timestamp": "%s",
+              "traceId": "trace-lifecycle-91001",
+              "correlationId": "corr-lifecycle-91001",
+              "actor": "sub-admin-ep2",
+              "payload": {
+                "productionId": %d,
+                "organizerId": "org-ep2",
+                "productionName": "Produccion Contrato Outbox EP2",
+                "previousStatus": "%s",
+                "newStatus": "%s",
+                "scheduledAt": "2026-11-20T20:00:00.123456",
+                "location": "Movistar Arena",
+                "occurredAt": "%s"
+              }
+            }
+            """, eventId, occurredAt, productionId, previousStatus, newStatus, occurredAt);
     }
 }

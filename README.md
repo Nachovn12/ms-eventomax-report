@@ -10,7 +10,7 @@
 
 `ms-eventomax-report` implementa el modelo de lectura analítico (**CQRS Read Model**) de **EventoMax EP2**. Consume de forma asíncrona e idempotente los eventos de dominio publicados en **Apache Kafka** (`productions.events`) por `ms-eventomax-productions` y proyecta indicadores clave de rendimiento (KPIs de estados de producción y tiempos de confirmación) así como el ranking de servicios más contratados (`top-services`).
 
-En despliegues AWS EC2 donde Kafka se mantiene apagado para preservar memoria de la instancia `t3.large` (dado que el foco evaluativo de EP2 es RabbitMQ), `ms-eventomax-report` inicia limpiamente con `KAFKA_CONSUMER_AUTO_STARTUP=false` y sirve sus endpoints HTTP `/api/report/kpis` y `/api/report/top-services` directamente desde su esquema PostgreSQL (`report`).
+En despliegues AWS EC2 donde Kafka se mantiene apagado para preservar memoria de la instancia `t3.large` (dado que el foco evaluativo de EP2 es RabbitMQ), `ms-eventomax-report` inicia limpiamente con `KAFKA_CONSUMER_AUTO_STARTUP=false` y sirve sus endpoints HTTP `/api/reports/kpis` y `/api/reports/top-services` (expuestos en el BFF bajo `/api/report/**` y `/api/reports/**`) directamente desde su esquema PostgreSQL (`report`), informando explícitamente en el campo `partialCoverage` (`isPartial: true`) cuando aún no existen eventos proyectados en el período consultado.
 
 ---
 

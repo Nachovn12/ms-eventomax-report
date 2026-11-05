@@ -274,5 +274,31 @@ public class ReportServiceImplTest {
         assertThat(response.items()).isEmpty();
         assertThat(response.partialCoverage().isPartial()).isTrue();
     }
+
+    @Test
+    void testCalculateKpisIncludesMontageTimeAndEventsPerDay() {
+        // Production 200: enters EN_MONTAJE 180 min ago, enters EN_EJECUCION 60 min ago -> 120 mins duration
+        insertFact(UUID.randomUUID(), 200L, "ProductionStatusChanged",
+                ProductionStatus.CONFIRMADO, ProductionStatus.EN_MONTAJE, fixedNow.minusSeconds(180 * 60));
+        insertFact(UUID.randomUUID(), 200L, "ProductionStatusChanged",
+                ProductionStatus.EN_MONTAJE, ProductionStatus.EN_EJECUCION, fixedNow.minusSeconds(60 * 60));
+
+        // Production 201: enters EN_MONTAJE 120 min ago, enters EN_EJECUCION 60 min ago -> 60 mins duration
+        insertFact(UUID.randomUUID(), 201L, "ProductionStatusChanged",
+                ProductionStatus.CONFIRMADO, ProductionStatus.EN_MONTAJE, fixedNow.minusSeconds(120 * 60));
+        insertFact(UUID.randomUUID(), 201L, "ProductionStatusChanged",
+                ProductionStatus.EN_MONTAJE, ProductionStatus.EN_EJECUCION, fixedNow.minusSeconds(60 * 60));
+
+        factRepository.flush();
+
+        KpisReportResponse response = reportService.calculateKpis(ReportRange.LAST_24H);
+
+        // Average duration = (120 + 60) / 2 = 90.0 minutes
+        assertThat(response.metrics().averageMontageTimeMinutes()).isEqualTo(90.0);
+
+        // Events per day series
+        assertThat(response.metrics().eventsPerDay()).isNotEmpty();
+        assertThat(response.metrics().eventsPerDay().get(0).count()).isEqualTo(4);
+    }
 }
 

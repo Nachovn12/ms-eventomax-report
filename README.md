@@ -1,75 +1,102 @@
-# ms-eventomax-report — Microservicio CQRS de Analítica, KPIs y Ranking de Servicios vía Kafka (EP2)
+<a href="https://7dewsdyt7i.execute-api.us-east-1.amazonaws.com/kafka-ui/">
+  <img src="docs/assets/eventomax-report-banner.svg" alt="EventoMax — Analítica y KPIs" width="100%" />
+</a>
 
-**Asignatura:** Desarrollo Cloud Native I (`DSY1107`)
-**Caso de Estudio:** Caso 8 — Plataforma de Producción y Montaje de Eventos (**EventoMax**)
-**Equipo:** Ignacio Valeria, Benjamín Flores, Benjamín Espinoza
+> **Caso de Estudio 8:** Plataforma B2B de Producción y Montaje de Eventos &nbsp;|&nbsp; **Asignatura:** Desarrollo Cloud Native (`DSY1107`) &nbsp;|&nbsp; **Equipo:** Ignacio Valeria, Benjamín Flores, Benjamín Espinoza
 
----
+## Propósito del Repositorio
 
-## 1. Propósito del Repositorio y Rol en EventoMax
+`ms-eventomax-report` implementa el modelo de lectura analítico (**CQRS Read Model**) de **EventoMax**. Consume en streaming los eventos de dominio publicados por `ms-eventomax-productions` en **Apache Kafka** (`productions.events`) y mantiene proyecciones SQL optimizadas para el dashboard operativo y los reportes ejecutivos:
 
-`ms-eventomax-report` implementa el modelo de lectura analítico (**CQRS Read Model**) de **EventoMax EP2**. Consume de forma asíncrona e idempotente los eventos de dominio publicados en **Apache Kafka** (`productions.events`) por `ms-eventomax-productions` y proyecta indicadores clave de rendimiento (KPIs de estados de producción y tiempos de confirmación) así como el ranking de servicios más contratados (`top-services`).
+- **Ingesta Idempotente y Tolerante a Fallos:** `ProductionEventListener` (`group-id: report-group`) valida cada sobre con `ProductionEventMapper` y delega en `ProductionEventIngestionService`, deduplicando eventos por `eventId` en `processed_event` y derivando mensajes irrecuperables hacia `productions.events.report.DLT`.
+- **Proyecciones Analíticas Agregadas:** Calcula totales de producciones, tasa de cancelación, tiempo promedio de montaje/confirmación, conteo diario de eventos y ranking de servicios más contratados (`top-services`) por ventana temporal (`range`).
+- **Cobertura Transparente (`partialCoverage`):** Si una consulta corresponde a una ventana sin eventos proyectados todavía, informa explícitamente el estado parcial en la respuesta sin inventar métricas.
 
-En despliegues AWS EC2 donde Kafka se mantiene apagado para preservar memoria de la instancia `t3.large` (dado que el foco evaluativo de EP2 es RabbitMQ), `ms-eventomax-report` inicia limpiamente con `KAFKA_CONSUMER_AUTO_STARTUP=false` y sirve sus endpoints HTTP `/api/reports/kpis` y `/api/reports/top-services` (expuestos en el BFF bajo `/api/report/**` y `/api/reports/**`) directamente desde su esquema PostgreSQL (`report`), informando explícitamente en el campo `partialCoverage` (`isPartial: true`) cuando aún no existen eventos proyectados en el período consultado.
+## Accesos Relacionados (Demo AWS)
 
----
+| Recurso | Enlace HTTPS | Acceso |
+| :--- | :--- | :--- |
+| **Apache Kafka UI** | [Abrir Kafka UI](https://7dewsdyt7i.execute-api.us-east-1.amazonaws.com/kafka-ui/) | Sin login (ver tópico `productions.events`, `report-group` y `.DLT`) |
+| **Swagger UI (Tag `Reportes`)** | [Abrir Swagger UI](https://7dewsdyt7i.execute-api.us-east-1.amazonaws.com/swagger-ui/index.html) | Lectura pública · `Bearer <JWT>` rol `Admin` |
 
-## 2. Arquitectura del Módulo y Diagrama
+## Endpoints Expuestos (`expose 8080`)
+
+| Método | Ruta | Rol Autorizado (vía BFF) | Descripción |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/report/kpis?range=last24h` | `Admin` | KPIs agregados de estados, cancelaciones, tiempo promedio de montaje y conteo diario |
+| `GET` | `/api/report/top-services?range=last7d` | `Admin` | Ranking ordenado de servicios técnicos contratados dentro de la ventana temporal |
+| `GET` | `/actuator/health`, `/actuator/info` | Interno | Sondeo de salud del contenedor |
+
+## Base de Datos y Migraciones Flyway (`V1..V2`)
+
+| Versión | Script | Tablas Proyectadas |
+| :--- | :--- | :--- |
+| `V1` | `V1__create_report_read_model.sql` | `processed_event` (idempotencia) y `report_production_fact` |
+| `V2` | `V2__create_report_service_hire_fact.sql` | `report_production_cancellation` y `report_service_hire_fact` |
+
+## Stack Tecnológico
+
+<table>
+  <tr>
+    <td align="center" width="20%">
+      <img src="docs/assets/tech/spring-boot.svg" width="36" height="36" alt="Spring Boot" /><br />
+      <strong>Java 25 · Boot 4.1.1</strong>
+    </td>
+    <td align="center" width="20%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tech/apache-kafka-dark.svg" />
+        <img src="docs/assets/tech/apache-kafka.svg" width="36" height="36" alt="Apache Kafka" />
+      </picture><br />
+      <strong>Spring Kafka + DLT</strong>
+    </td>
+    <td align="center" width="20%">
+      <img src="docs/assets/tech/postgresql.svg" width="36" height="36" alt="PostgreSQL" /><br />
+      <strong>PostgreSQL · Flyway</strong>
+    </td>
+    <td align="center" width="20%">
+      <img src="docs/assets/tech/microsoft.svg" width="36" height="36" alt="Microsoft Entra ID" /><br />
+      <strong>Entra ID OAuth2</strong>
+    </td>
+    <td align="center" width="20%">
+      <img src="docs/assets/tech/docker.svg" width="36" height="36" alt="Docker" /><br />
+      <strong>Docker (512m)</strong>
+    </td>
+  </tr>
+</table>
+
+## Arquitectura del Módulo
 
 ```mermaid
-flowchart LR
-    KFK[["Apache Kafka\nTopic: productions.events"]] -->|Consumer Group: report-group| LISTENER["ProductionEventListener\n(ms-eventomax-report)"]
-    LISTENER -.->|Poison Message| DLT[["Topic DLT:\nproductions.events.report.DLT"]]
-    LISTENER --> INGEST["ProductionEventIngestionService\n(Idempotencia processed_event)"]
-    INGEST --> PG_REP[("PostgreSQL (Flyway V1..V2)\nreport_production_state\nreport_status_transition_fact\nreport_service_hire_fact\nreport_production_cancellation\nprocessed_event")]
-    BFF["ms-eventomax-bff"] -->|GET /api/report/kpis\nGET /api/report/top-services| CTRL["ReportController"]
-    CTRL --> PG_REP
+flowchart TB
+    KFK[["Apache Kafka<br/>productions.events (report-group)"]] --> LISTEN
+    DLT[["productions.events.report.DLT"]]
+
+    subgraph REP["ms-eventomax-report (:8080)"]
+        direction LR
+        LISTEN["ProductionEventListener<br/>+ ProductionEventMapper"] --> INGEST["ProductionEventIngestionService<br/>(Idempotencia processed_event)"]
+        INGEST --> PG[("PostgreSQL (V1..V2)<br/>report_production_fact<br/>report_service_hire_fact")]
+        CTRL["ReportController"] --> PG
+    end
+
+    LISTEN -.->|"Error no recuperable"| DLT
+    BFF["ms-eventomax-bff"] -->|"GET /api/report/kpis · /top-services"| CTRL
 ```
 
----
+## Variables de Entorno y Verificación
 
-## 3. Stack Tecnológico y Versiones Reales (`pom.xml`)
-
-| Componente | Tecnología / Dependencia | Versión |
-|---|---|---|
-| Lenguaje | Java (Eclipse Temurin) | `25` |
-| Framework Base | Spring Boot (`spring-boot-starter-parent`) | `4.1.1` |
-| Mensajería de Eventos | `spring-kafka` | Boot `4.1.1` |
-| Persistencia | Spring Data JPA + PostgreSQL + Flyway (`V1`, `V2`) | Boot `4.1.1` |
-| Seguridad | `spring-boot-starter-security` + `oauth2-resource-server` | Boot `4.1.1` |
-| Testing | JUnit 5, Testcontainers (`2.0.5`, PostgreSQL + Kafka), MockMvc | Boot `4.1.1` |
-
----
-
-## 4. Endpoints Expuestos
-
-| Método | Ruta | Roles Autorizados | Descripción |
-|---|---|---|---|
-| `GET` | `/api/report/kpis?from=YYYY-MM-DD&to=YYYY-MM-DD` | `Admin`, `Auditor` | Devuelve totales de producciones por estado, tasa de cancelación y tiempo promedio de confirmación en el rango UTC consultado. |
-| `GET` | `/api/report/top-services?from=YYYY-MM-DD&to=YYYY-MM-DD` | `Admin`, `Auditor` | Devuelve el ranking ordenado de servicios contratados en producciones no canceladas dentro del rango de fechas. |
-| `GET` | `/actuator/health`, `/actuator/info` | Público (Healthcheck interno) | Estado de salud del microservicio. |
-
----
-
-## 5. Variables de Entorno Requeridas (`.env.prod.example`)
-
-| Variable | Ejemplo Placeholder | Descripción |
-|---|---|---|
-| `DB_URL` | `jdbc:postgresql://<POSTGRES_HOST>:5432/eventomax?currentSchema=report` | URL JDBC PostgreSQL |
-| `DB_USER` | `eventomax_prod` | Usuario PostgreSQL |
-| `DB_PASSWORD` | `<SECRET_DB_PASSWORD>` | Contraseña PostgreSQL |
-| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Brokers Apache Kafka |
-| `KAFKA_CONSUMER_AUTO_STARTUP` | `false` (en EC2 sin Kafka) o `true` (con Kafka activo) | Controla el auto-inicio del listener Kafka |
-| `ENTRA_ISSUER_URI` | `https://login.microsoftonline.com/<TENANT_ID>/v2.0` | Issuer URI de Microsoft Entra ID |
-| `ENTRA_AUDIENCE` | `api://a1a87bcd-fed7-4d65-83c3-338389b80093` | Audience del API en Entra ID |
-
----
-
-## 6. Ejecución de Pruebas Automatizadas y Despliegue Docker
+| Variable | Ejemplo | Descripción |
+| :--- | :--- | :--- |
+| `DB_URL` / `DB_USER` / `DB_PASSWORD` | `jdbc:postgresql://<HOST>:5432/eventomax?currentSchema=report` | Conexión PostgreSQL y esquema `report` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `ec2-kafka:9092` | Brokers del clúster Apache Kafka |
+| `KAFKA_CONSUMER_GROUP` | `report-group` | Consumer group del Read Model |
+| `KAFKA_CONSUMER_AUTO_STARTUP` | `true` (en entorno Kafka activo) / `false` (solo lectura DB) | Controla auto-inicio del listener Kafka |
+| `KAFKA_TOPIC_PRODUCTION_EVENTS` / `REPORT_DLT` | `productions.events` / `productions.events.report.DLT` | Tópicos fuente y Dead Letter |
+| `ENTRA_ISSUER_URI` / `ENTRA_AUDIENCE` | `https://login.microsoftonline.com/<TENANT>/v2.0` | Validación JWT Entra ID |
 
 ```bash
-mvn clean verify
+# Ejecutar suite completa con Testcontainers PostgreSQL y Kafka
+./mvnw -B -ntp verify
+
+# Despliegue Docker (mem_limit: 512m)
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
-
-**Resultado certificado en EP2:** `Tests run: 59, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS`. Presupuesto de memoria: `mem_limit: 512m`.

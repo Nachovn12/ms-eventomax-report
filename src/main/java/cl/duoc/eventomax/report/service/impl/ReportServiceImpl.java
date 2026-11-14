@@ -102,13 +102,60 @@ public class ReportServiceImpl implements ReportService {
                     (currentCount == null ? 0L : currentCount) + 1L);
         }
 
+        // KPI: Eventos por día
+        Map<String, Long> dailyCounts = facts.stream()
+                .collect(Collectors.groupingBy(
+                        fact -> fact.getOccurredAt().atZone(java.time.ZoneOffset.UTC).toLocalDate().toString(),
+                        LinkedHashMap::new,
+                        Collectors.counting()
+                ));
+        List<cl.duoc.eventomax.report.dto.DailyEventCountDto> eventsPerDay = dailyCounts.entrySet().stream()
+                .map(entry -> new cl.duoc.eventomax.report.dto.DailyEventCountDto(entry.getKey(), entry.getValue()))
+                .sorted(java.util.Comparator.comparing(cl.duoc.eventomax.report.dto.DailyEventCountDto::date))
+                .toList();
+
+        // KPI: Tiempo promedio de montaje (diferencia entre EN_MONTAJE y EN_EJECUCION por producción)
+        Map<Long, List<ReportProductionFact>> factsByProduction = facts.stream()
+                .collect(Collectors.groupingBy(ReportProductionFact::getProductionId));
+
+        List<Long> montageDurationsMinutes = new java.util.ArrayList<>();
+        for (List<ReportProductionFact> prodFacts : factsByProduction.values()) {
+            Instant montageStart = null;
+            Instant montageEnd = null;
+
+            List<ReportProductionFact> sortedFacts = prodFacts.stream()
+                    .sorted(java.util.Comparator.comparing(ReportProductionFact::getOccurredAt))
+                    .toList();
+
+            for (ReportProductionFact fact : sortedFacts) {
+                if (fact.getNewStatus() == ProductionStatus.EN_MONTAJE && montageStart == null) {
+                    montageStart = fact.getOccurredAt();
+                } else if (fact.getNewStatus() == ProductionStatus.EN_EJECUCION && montageStart != null && montageEnd == null) {
+                    montageEnd = fact.getOccurredAt();
+                }
+            }
+
+            if (montageStart != null && montageEnd != null && !montageEnd.isBefore(montageStart)) {
+                long durationMinutes = java.time.Duration.between(montageStart, montageEnd).toMinutes();
+                montageDurationsMinutes.add(durationMinutes);
+            }
+        }
+
+        double averageMontageTimeMinutes = 0.0;
+        if (!montageDurationsMinutes.isEmpty()) {
+            double avg = montageDurationsMinutes.stream().mapToLong(Long::longValue).average().orElse(0.0);
+            averageMontageTimeMinutes = Math.round(avg * 100.0) / 100.0;
+        }
+
         PartialCoverageDto partialCoverage = new PartialCoverageDto(true, PARTIAL_COVERAGE_DESCRIPTION);
         KpiMetricsDto metrics = new KpiMetricsDto(
                 totalStatusChanges,
                 currentStatusDistribution,
                 transitions,
                 cancelledCount,
-                closedCount
+                closedCount,
+                averageMontageTimeMinutes,
+                eventsPerDay
         );
 
         return new KpisReportResponse(

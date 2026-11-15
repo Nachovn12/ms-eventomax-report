@@ -118,7 +118,7 @@ public class ReportServiceImpl implements ReportService {
         Map<Long, List<ReportProductionFact>> factsByProduction = facts.stream()
                 .collect(Collectors.groupingBy(ReportProductionFact::getProductionId));
 
-        List<Long> montageDurationsMinutes = new java.util.ArrayList<>();
+        List<Double> montageDurationsMinutes = new java.util.ArrayList<>();
         for (List<ReportProductionFact> prodFacts : factsByProduction.values()) {
             Instant montageStart = null;
             Instant montageEnd = null;
@@ -136,14 +136,17 @@ public class ReportServiceImpl implements ReportService {
             }
 
             if (montageStart != null && montageEnd != null && !montageEnd.isBefore(montageStart)) {
-                long durationMinutes = java.time.Duration.between(montageStart, montageEnd).toMinutes();
+                double durationMinutes = java.time.Duration.between(montageStart, montageEnd).toMillis() / 60000.0;
+                if (durationMinutes > 0.0 && durationMinutes < 0.1) {
+                    durationMinutes = 0.1;
+                }
                 montageDurationsMinutes.add(durationMinutes);
             }
         }
 
         double averageMontageTimeMinutes = 0.0;
         if (!montageDurationsMinutes.isEmpty()) {
-            double avg = montageDurationsMinutes.stream().mapToLong(Long::longValue).average().orElse(0.0);
+            double avg = montageDurationsMinutes.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
             averageMontageTimeMinutes = Math.round(avg * 100.0) / 100.0;
         }
 
